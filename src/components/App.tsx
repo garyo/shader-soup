@@ -48,7 +48,7 @@ export const App: Component = () => {
       pipelineBuilder = new PipelineBuilder(context);
       executor = new Executor(context, true); // Enable profiling
       coordGenerator = new CoordinateGenerator();
-      resultRenderer = new ResultRenderer(bufferManager);
+      resultRenderer = new ResultRenderer(bufferManager, context);
 
       setWebgpuReady(true);
 

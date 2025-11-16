@@ -3,40 +3,131 @@
  */
 
 import { BufferManager } from '../engine/BufferManager';
+import { WebGPUContext } from '../engine/WebGPUContext';
 import type { Dimensions } from '@/types/core';
+import conversionShaderSource from '@/shaders/utils/float-to-uint8.wgsl?raw';
 
 export class ResultRenderer {
   private bufferManager: BufferManager;
+  private context: WebGPUContext;
   private useOffscreenCanvas: boolean;
+  private conversionPipeline: GPUComputePipeline | null = null;
+  private conversionBindGroupLayout: GPUBindGroupLayout | null = null;
 
-  constructor(bufferManager: BufferManager) {
+  constructor(bufferManager: BufferManager, context: WebGPUContext) {
     this.bufferManager = bufferManager;
+    this.context = context;
     this.useOffscreenCanvas = typeof OffscreenCanvas !== 'undefined';
+    this.initializeConversionPipeline();
   }
 
   /**
-   * Convert GPU buffer to ImageData
+   * Initialize GPU-based f32-to-uint8 conversion pipeline
+   */
+  private async initializeConversionPipeline(): Promise<void> {
+    const device = this.context.getDevice();
+
+    // Compile conversion shader
+    const shaderModule = device.createShaderModule({
+      label: 'float-to-uint8-converter',
+      code: conversionShaderSource,
+    });
+
+    // Create bind group layout
+    this.conversionBindGroupLayout = device.createBindGroupLayout({
+      label: 'conversion-bind-group-layout',
+      entries: [
+        {
+          binding: 0,
+          visibility: GPUShaderStage.COMPUTE,
+          buffer: { type: 'read-only-storage' },
+        },
+        {
+          binding: 1,
+          visibility: GPUShaderStage.COMPUTE,
+          buffer: { type: 'storage' },
+        },
+      ],
+    });
+
+    // Create pipeline
+    this.conversionPipeline = device.createComputePipeline({
+      label: 'float-to-uint8-pipeline',
+      layout: device.createPipelineLayout({
+        bindGroupLayouts: [this.conversionBindGroupLayout],
+      }),
+      compute: {
+        module: shaderModule,
+        entryPoint: 'main',
+      },
+    });
+  }
+
+  /**
+   * Convert vec4<f32> buffer to RGBA8 buffer using GPU
+   * @param f32Buffer - Input buffer with vec4<f32> data
+   * @param dimensions - Image dimensions
+   * @returns GPU buffer with packed RGBA8 data (u32 array)
+   */
+  public convertF32ToRGBA8(f32Buffer: GPUBuffer, dimensions: Dimensions): GPUBuffer {
+    const device = this.context.getDevice();
+    const pixelCount = dimensions.width * dimensions.height;
+
+    // Create output buffer (4 bytes per pixel as packed u32)
+    const outputBuffer = this.bufferManager.createBuffer(
+      {
+        size: pixelCount * 4, // 4 bytes per pixel
+        usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC,
+        label: 'rgba8-output',
+      },
+      false
+    );
+
+    if (!this.conversionPipeline || !this.conversionBindGroupLayout) {
+      throw new Error('Conversion pipeline not initialized');
+    }
+
+    // Create bind group
+    const bindGroup = device.createBindGroup({
+      label: 'conversion-bind-group',
+      layout: this.conversionBindGroupLayout,
+      entries: [
+        { binding: 0, resource: { buffer: f32Buffer } },
+        { binding: 1, resource: { buffer: outputBuffer } },
+      ],
+    });
+
+    // Execute conversion
+    const encoder = device.createCommandEncoder({ label: 'conversion-encoder' });
+    const pass = encoder.beginComputePass({ label: 'conversion-pass' });
+    pass.setPipeline(this.conversionPipeline);
+    pass.setBindGroup(0, bindGroup);
+
+    // Dispatch: 64 pixels per workgroup
+    const workgroupCount = Math.ceil(pixelCount / 64);
+    pass.dispatchWorkgroups(workgroupCount);
+    pass.end();
+
+    device.queue.submit([encoder.finish()]);
+
+    return outputBuffer;
+  }
+
+  /**
+   * Convert GPU buffer to ImageData using GPU-based conversion
    * @param buffer - GPU buffer containing RGBA data as vec4<f32>
    * @param dimensions - Image dimensions
    * @returns ImageData
    */
   public async bufferToImageData(buffer: GPUBuffer, dimensions: Dimensions): Promise<ImageData> {
-    // Read buffer data (contains f32 values: 4 bytes per channel, 16 bytes per pixel)
-    const data = await this.bufferManager.readFromBuffer(buffer);
+    // Convert on GPU: vec4<f32> -> packed RGBA8
+    const rgba8Buffer = this.convertF32ToRGBA8(buffer, dimensions);
 
-    // TODO: Optimize by doing f32-to-uint8 conversion on GPU using a compute shader
-    // This would eliminate the CPU conversion loop and reduce data transfer
-    // (vec4<f32> 16 bytes/pixel -> vec4<u8> 4 bytes/pixel)
+    // Read packed RGBA8 data (4 bytes per pixel, already in correct format)
+    const data = await this.bufferManager.readFromBuffer(rgba8Buffer);
 
-    // Convert from Float32Array to Uint8ClampedArray
-    const float32Data = new Float32Array(data);
-    const pixelCount = dimensions.width * dimensions.height;
-    const uint8Data = new Uint8ClampedArray(pixelCount * 4);
-
-    // Convert f32 (0.0-1.0) to uint8 (0-255)
-    for (let i = 0; i < pixelCount * 4; i++) {
-      uint8Data[i] = Math.floor(float32Data[i] * 255);
-    }
+    // Create Uint8ClampedArray view directly (no conversion needed!)
+    const uint8Data = new Uint8ClampedArray(data);
 
     // Create ImageData
     return new ImageData(uint8Data, dimensions.width, dimensions.height);
