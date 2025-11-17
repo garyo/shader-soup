@@ -5,11 +5,14 @@
 import { createStore } from 'solid-js/store';
 import type { ShaderDefinition, ShaderParameter } from '@/types/core';
 
+const STORAGE_KEY = 'evolve-image-gen-promoted-shaders';
+
 interface ShaderState {
   shaders: Map<string, ShaderDefinition>;
   activeShaders: Set<string>;
   parameterValues: Map<string, Map<string, number>>; // shaderId -> paramName -> value
   selectedShaderId: string | null;
+  promotedShaderIds: Set<string>; // Track which shaders are promoted (saved to localStorage)
 }
 
 const [state, setState] = createStore<ShaderState>({
@@ -17,7 +20,47 @@ const [state, setState] = createStore<ShaderState>({
   activeShaders: new Set(),
   parameterValues: new Map(),
   selectedShaderId: null,
+  promotedShaderIds: new Set(),
 });
+
+// Helper functions for localStorage
+function savePromotedShadersToStorage() {
+  try {
+    const promotedShaders = Array.from(state.shaders.values()).filter((shader) =>
+      state.promotedShaderIds.has(shader.id)
+    );
+
+    // Convert to plain objects for JSON serialization
+    const serialized = promotedShaders.map((shader) => ({
+      ...shader,
+      createdAt: shader.createdAt.toISOString(),
+      modifiedAt: shader.modifiedAt.toISOString(),
+    }));
+
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(serialized));
+  } catch (error) {
+    console.error('Failed to save promoted shaders to localStorage:', error);
+  }
+}
+
+function loadPromotedShadersFromStorage(): ShaderDefinition[] {
+  try {
+    const stored = localStorage.getItem(STORAGE_KEY);
+    if (!stored) return [];
+
+    const parsed = JSON.parse(stored);
+
+    // Convert date strings back to Date objects
+    return parsed.map((shader: any) => ({
+      ...shader,
+      createdAt: new Date(shader.createdAt),
+      modifiedAt: new Date(shader.modifiedAt),
+    }));
+  } catch (error) {
+    console.error('Failed to load promoted shaders from localStorage:', error);
+    return [];
+  }
+}
 
 export const shaderStore = {
   get shaders() {
@@ -198,5 +241,60 @@ export const shaderStore = {
     setState('activeShaders', new Set());
     setState('parameterValues', new Map());
     setState('selectedShaderId', null);
+    setState('promotedShaderIds', new Set());
+  },
+
+  /**
+   * Add a promoted shader (marks it for localStorage persistence)
+   */
+  addPromotedShader(shader: ShaderDefinition) {
+    // Add shader using normal method
+    this.addShader(shader);
+
+    // Mark as promoted
+    setState('promotedShaderIds', (promoted) => {
+      const newPromoted = new Set(promoted);
+      newPromoted.add(shader.id);
+      return newPromoted;
+    });
+
+    // Save to localStorage
+    savePromotedShadersToStorage();
+  },
+
+  /**
+   * Load promoted shaders from localStorage
+   */
+  loadPromotedShaders() {
+    const promotedShaders = loadPromotedShadersFromStorage();
+
+    for (const shader of promotedShaders) {
+      // Add shader
+      this.addShader(shader);
+
+      // Mark as promoted
+      setState('promotedShaderIds', (promoted) => {
+        const newPromoted = new Set(promoted);
+        newPromoted.add(shader.id);
+        return newPromoted;
+      });
+    }
+
+    return promotedShaders.length;
+  },
+
+  /**
+   * Remove a promoted shader and update localStorage
+   */
+  removePromotedShader(id: string) {
+    this.removeShader(id);
+
+    setState('promotedShaderIds', (promoted) => {
+      const newPromoted = new Set(promoted);
+      newPromoted.delete(id);
+      return newPromoted;
+    });
+
+    savePromotedShadersToStorage();
   },
 };

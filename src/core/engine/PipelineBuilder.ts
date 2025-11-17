@@ -134,8 +134,9 @@ export class PipelineBuilder {
    * Create a bind group layout for typical shader inputs
    * - Binding 0: Input coordinates (storage, read-only)
    * - Binding 1: Output buffer (storage, read-write)
-   * - Binding 2: Parameters (uniform, optional)
-   * - Binding 3: Input texture (optional)
+   * - Binding 2: Dimensions (uniform, always present)
+   * - Binding 3: Parameters (uniform, optional)
+   * - Binding 4: Input texture (optional)
    *
    * @param hasParams - Whether shader has parameters
    * @param hasTexture - Whether shader has input texture
@@ -164,12 +165,20 @@ export class PipelineBuilder {
           type: 'storage',
         },
       },
+      // Binding 2: Dimensions (uniform, always present)
+      {
+        binding: 2,
+        visibility: GPUShaderStage.COMPUTE,
+        buffer: {
+          type: 'uniform',
+        },
+      },
     ];
 
-    // Binding 2: Parameters (uniform)
+    // Binding 3: Parameters (uniform)
     if (hasParams) {
       entries.push({
-        binding: 2,
+        binding: 3,
         visibility: GPUShaderStage.COMPUTE,
         buffer: {
           type: 'uniform',
@@ -177,10 +186,10 @@ export class PipelineBuilder {
       });
     }
 
-    // Binding 3: Input texture (optional)
+    // Binding 4: Input texture (optional)
     if (hasTexture) {
       entries.push({
-        binding: 3,
+        binding: 4,
         visibility: GPUShaderStage.COMPUTE,
         texture: {
           sampleType: 'float',
@@ -188,9 +197,9 @@ export class PipelineBuilder {
         },
       });
 
-      // Binding 4: Sampler for texture
+      // Binding 5: Sampler for texture
       entries.push({
-        binding: 4,
+        binding: 5,
         visibility: GPUShaderStage.COMPUTE,
         sampler: {
           type: 'filtering',
@@ -206,6 +215,7 @@ export class PipelineBuilder {
    * @param layout - Bind group layout
    * @param coordBuffer - Coordinate buffer
    * @param outputBuffer - Output buffer
+   * @param dimensionsBuffer - Dimensions buffer (always required)
    * @param paramBuffer - Optional parameter buffer
    * @param texture - Optional input texture
    * @param sampler - Optional sampler (required if texture provided)
@@ -216,6 +226,7 @@ export class PipelineBuilder {
     layout: GPUBindGroupLayout,
     coordBuffer: GPUBuffer,
     outputBuffer: GPUBuffer,
+    dimensionsBuffer: GPUBuffer,
     paramBuffer?: GPUBuffer,
     texture?: GPUTexture,
     sampler?: GPUSampler,
@@ -230,24 +241,28 @@ export class PipelineBuilder {
         binding: 1,
         resource: { buffer: outputBuffer },
       },
+      {
+        binding: 2,
+        resource: { buffer: dimensionsBuffer },
+      },
     ];
 
     if (paramBuffer) {
       bindings.push({
-        binding: 2,
+        binding: 3,
         resource: { buffer: paramBuffer },
       });
     }
 
     if (texture) {
       bindings.push({
-        binding: 3,
+        binding: 4,
         resource: texture.createView(),
       });
 
       if (sampler) {
         bindings.push({
-          binding: 4,
+          binding: 5,
           resource: sampler,
         });
       }

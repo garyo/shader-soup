@@ -65,7 +65,7 @@ export class ParameterManager {
 
     // Create buffer with UNIFORM usage
     return this.bufferManager.createBufferWithData(
-      parameterValues,
+      parameterValues as BufferSource,
       GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
       'parameter-buffer'
     );

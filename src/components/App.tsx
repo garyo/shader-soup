@@ -4,8 +4,10 @@
 
 import { type Component, onMount, createSignal, createEffect, Show } from 'solid-js';
 import { ShaderGrid } from './ShaderGrid';
+import { Toolbar } from './Toolbar';
+import { LogOverlay, type LogEntry } from './LogOverlay';
 import WebGPUCheck from './WebGPUCheck';
-import { shaderStore, inputStore, resultStore } from '@/stores';
+import { shaderStore, inputStore, resultStore, evolutionStore } from '@/stores';
 import { getWebGPUContext } from '@/core/engine/WebGPUContext';
 import { ShaderCompiler } from '@/core/engine/ShaderCompiler';
 import { BufferManager } from '@/core/engine/BufferManager';
@@ -14,6 +16,7 @@ import { PipelineBuilder } from '@/core/engine/PipelineBuilder';
 import { Executor, createExecutionContext } from '@/core/engine/Executor';
 import { CoordinateGenerator } from '@/core/input/CoordinateGenerator';
 import { ResultRenderer } from '@/core/output/ResultRenderer';
+import { ShaderEvolver } from '@/core/llm';
 import type { ShaderDefinition } from '@/types/core';
 
 // Import example shader sources
@@ -25,6 +28,16 @@ import radialGradientSource from '../shaders/examples/radial-gradient.wgsl?raw';
 export const App: Component = () => {
   const [webgpuReady, setWebgpuReady] = createSignal(false);
   const [error, setError] = createSignal<string | null>(null);
+  const [temperature, setTemperature] = createSignal(0.9); // Default evolution temperature
+  const [logs, setLogs] = createSignal<LogEntry[]>([]);
+  const [logOverlayOpen, setLogOverlayOpen] = createSignal(false);
+
+  // Add log entry to the overlay
+  const addLog = (message: string, type: 'info' | 'error' | 'success' = 'info') => {
+    setLogs(prev => [...prev, { timestamp: new Date(), message, type }]);
+  };
+
+  // GPU downsampling is now handled in ResultRenderer
 
   // WebGPU components
   let compiler: ShaderCompiler;
@@ -34,6 +47,7 @@ export const App: Component = () => {
   let executor: Executor;
   let coordGenerator: CoordinateGenerator;
   let resultRenderer: ResultRenderer;
+  let shaderEvolver: ShaderEvolver;
 
   // Initialize WebGPU and load example shaders
   onMount(async () => {
@@ -50,7 +64,22 @@ export const App: Component = () => {
       coordGenerator = new CoordinateGenerator();
       resultRenderer = new ResultRenderer(bufferManager, context);
 
+      // Initialize LLM-based shader evolver
+      const apiKey = import.meta.env.VITE_ANTHROPIC_API_KEY;
+      console.log('API Key check:', apiKey ? `Found (${apiKey.substring(0, 15)}...)` : 'NOT FOUND');
+      console.log('All env vars:', import.meta.env);
+      if (apiKey) {
+        shaderEvolver = new ShaderEvolver(apiKey, compiler, parameterManager);
+        console.log('ShaderEvolver initialized successfully');
+      } else {
+        console.warn('VITE_ANTHROPIC_API_KEY not set - evolution feature disabled');
+      }
+
       setWebgpuReady(true);
+
+      // Load promoted shaders from localStorage
+      const promotedCount = shaderStore.loadPromotedShaders();
+      console.log(`Loaded ${promotedCount} promoted shaders from localStorage`);
 
       // Load example shaders
       loadExampleShaders();
@@ -88,6 +117,7 @@ export const App: Component = () => {
       const shader: ShaderDefinition = {
         id: crypto.randomUUID(),
         name: example.name,
+        cacheKey: example.name.toLowerCase().replace(/\s+/g, '-'), // e.g., "sine-wave"
         source: example.source,
         parameters: params,
         description: example.description,
@@ -102,23 +132,31 @@ export const App: Component = () => {
     executeAllShaders();
   };
 
-  const executeShader = async (shaderId: string) => {
+  const executeShader = async (shaderId: string, shaderOverride?: ShaderDefinition) => {
     try {
-      const shader = shaderStore.getShader(shaderId);
+      // Use provided shader or look up from store
+      const shader = shaderOverride || shaderStore.getShader(shaderId);
       if (!shader) return;
 
       const dimensions = inputStore.outputDimensions;
 
-      // Generate coordinates
-      const coords = coordGenerator.generateGrid(dimensions);
+      // Supersample at 3x for antialiasing
+      const supersampleFactor = 3;
+      const superDimensions = {
+        width: dimensions.width * supersampleFactor,
+        height: dimensions.height * supersampleFactor,
+      };
+
+      // Generate coordinates at supersampled resolution
+      const coords = coordGenerator.generateGrid(superDimensions);
       const coordBuffer = bufferManager.createBufferWithData(
-        coords,
+        coords as BufferSource,
         GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
         'coords'
       );
 
-      // Create output buffer (RGBA format: 4 bytes per pixel)
-      const outputSize = dimensions.width * dimensions.height * 4 * 4; // vec4<f32> = 16 bytes per pixel
+      // Create output buffer at supersampled resolution (RGBA format: 4 bytes per pixel)
+      const outputSize = superDimensions.width * superDimensions.height * 4 * 4; // vec4<f32> = 16 bytes per pixel
       const outputBuffer = bufferManager.createBuffer(
         {
           size: outputSize,
@@ -128,9 +166,9 @@ export const App: Component = () => {
         false
       );
 
-      // Compile shader
+      // Compile shader (use cacheKey for internal caching)
       const startCompile = performance.now();
-      const compilationResult = await compiler.compile(shader.source, shader.name);
+      const compilationResult = await compiler.compile(shader.source, shader.cacheKey);
 
       if (!compilationResult.success || !compilationResult.module) {
         throw new Error(`Compilation failed: ${ShaderCompiler.formatErrors(compilationResult.errors)}`);
@@ -138,20 +176,32 @@ export const App: Component = () => {
 
       const compileTime = performance.now() - startCompile;
 
+      // Create dimensions buffer (always required)
+      const dimensionsData = new Uint32Array([superDimensions.width, superDimensions.height, 0, 0]);
+      const dimensionsBuffer = bufferManager.createBufferWithData(
+        dimensionsData as BufferSource,
+        GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+        'dimensions'
+      );
+
       // Create parameter buffer if shader has parameters
       let paramBuffer: GPUBuffer | undefined;
       if (shader.parameters.length > 0) {
-        const paramValues = shaderStore.getParameterValues(shaderId);
+        // Use shader defaults if not in store (for children)
+        const paramValues = shaderOverride
+          ? new Map(shader.parameters.map(p => [p.name, p.default]))
+          : shaderStore.getParameterValues(shaderId);
         paramBuffer = parameterManager.createParameterBuffer(shader.parameters, paramValues);
       }
 
       // Create bind group layout and bind group
       const hasParams = shader.parameters.length > 0;
-      const layout = pipelineBuilder.createStandardLayout(hasParams, false, shader.name);
+      const layout = pipelineBuilder.createStandardLayout(hasParams, false, shader.cacheKey);
       const bindGroup = pipelineBuilder.createStandardBindGroup(
         layout,
         coordBuffer,
         outputBuffer,
+        dimensionsBuffer,
         paramBuffer
       );
 
@@ -160,25 +210,35 @@ export const App: Component = () => {
         shader: compilationResult.module,
         entryPoint: 'main',
         bindGroupLayouts: [layout],
-        label: shader.name,
+        label: shader.cacheKey,
       });
 
-      // Execute
-      const workgroups = executor.calculateWorkgroups(dimensions.width, dimensions.height);
+      // Execute at supersampled resolution
+      const workgroups = executor.calculateWorkgroups(superDimensions.width, superDimensions.height);
       const executionContext = createExecutionContext(pipeline, bindGroup, workgroups, outputBuffer);
 
       const startExec = performance.now();
       await executor.execute(executionContext);
       const execTime = performance.now() - startExec;
 
-      // Read result
-      const imageData = await resultRenderer.bufferToImageData(outputBuffer, dimensions);
+      // Downsample on GPU, then convert to ImageData
+      const downsampleStart = performance.now();
+      const downsampledBuffer = resultRenderer.downsample(outputBuffer, superDimensions, dimensions, supersampleFactor);
+      const imageData = await resultRenderer.bufferToImageData(downsampledBuffer, dimensions);
+      const downsampleTime = performance.now() - downsampleStart;
+
+      const totalTime = compileTime + execTime + downsampleTime;
+
+      // Log execution time
+      addLog(
+        `Rendered "${shader.name}": compile ${compileTime.toFixed(1)}ms + exec ${execTime.toFixed(1)}ms + downsample ${downsampleTime.toFixed(1)}ms = ${totalTime.toFixed(1)}ms (${superDimensions.width}x${superDimensions.height} → ${dimensions.width}x${dimensions.height})`
+      );
 
       // Update result store
       resultStore.updateResult({
         shaderId,
         imageData,
-        executionTime: compileTime + execTime,
+        executionTime: totalTime,
         timestamp: new Date(),
       });
 
@@ -205,6 +265,89 @@ export const App: Component = () => {
     shaderStore.updateParameter(shaderId, paramName, value);
     // Re-execute shader with new parameters
     executeShader(shaderId);
+  };
+
+  const handleEvolve = async (shaderId: string) => {
+    if (!shaderEvolver) {
+      alert('Evolution feature requires VITE_ANTHROPIC_API_KEY environment variable');
+      return;
+    }
+
+    const shader = shaderStore.getShader(shaderId);
+    if (!shader) return;
+
+    // Start evolution
+    const childrenCount = 3;
+    const currentTemp = temperature(); // Get current temperature from signal
+    evolutionStore.startEvolution(shaderId, shader.name, childrenCount, currentTemp);
+
+    addLog(`Starting evolution of "${shader.name}" (temp: ${currentTemp.toFixed(2)}, children: ${childrenCount})`);
+
+    try {
+      // Update progress: generating batch
+      evolutionStore.updateProgress(shaderId, {
+        currentChild: 0,
+        status: 'mutating',
+        debugAttempt: 0,
+      });
+
+      addLog(`Generating ${childrenCount} shader variations...`);
+
+      // Evolve all children in one batch call with current temperature
+      const results = await shaderEvolver.evolveShaderBatch(shader, childrenCount, currentTemp);
+
+      addLog(`Received ${results.length} variations, processing...`, 'success');
+
+      // Process each result
+      for (let i = 0; i < results.length; i++) {
+        const result = results[i];
+
+        evolutionStore.updateProgress(shaderId, {
+          currentChild: i + 1,
+          status: result.success ? 'naming' : 'mutating',
+          debugAttempt: result.debugAttempts || 0,
+        });
+
+        if (result.success && result.shader) {
+          addLog(`✓ Child ${i + 1}/${childrenCount} compiled successfully (${result.debugAttempts || 0} debug attempts)`);
+
+          // Add child to evolution store (NOT main shader store)
+          evolutionStore.addChild(shaderId, result.shader);
+
+          // Execute child shader to generate ImageData (but don't add to main grid)
+          await executeShader(result.shader.id, result.shader);
+        } else {
+          addLog(`✗ Child ${i + 1}/${childrenCount} failed: ${result.error}`, 'error');
+          console.warn(`Failed to evolve child ${i + 1}:`, result.error);
+          evolutionStore.updateProgress(shaderId, {
+            lastError: result.error,
+          });
+        }
+      }
+
+      addLog(`Evolution complete: ${results.filter(r => r.success).length}/${childrenCount} succeeded`, 'success');
+    } catch (error) {
+      const errorMsg = error instanceof Error ? error.message : 'Unknown batch evolution error';
+      addLog(`Evolution failed: ${errorMsg}`, 'error');
+      console.error('Batch evolution error:', error);
+      evolutionStore.updateProgress(shaderId, {
+        lastError: errorMsg,
+      });
+    }
+
+    // Complete evolution
+    evolutionStore.completeEvolution(shaderId);
+  };
+
+  const handleCancelEvolution = (shaderId: string) => {
+    evolutionStore.cancelEvolution(shaderId);
+  };
+
+  const handlePromoteChild = (child: ShaderDefinition) => {
+    // Add child to main shader store as promoted (persists to localStorage)
+    shaderStore.addPromotedShader(child);
+    // Execute the shader to display it
+    executeShader(child.id);
   };
 
   // Re-execute shaders when active shaders change
@@ -244,9 +387,17 @@ export const App: Component = () => {
             </p>
           </div>
 
+          <Toolbar
+            temperature={temperature()}
+            onTemperatureChange={setTemperature}
+          />
+
           <ShaderGrid
             shaders={shaderStore.getActiveShaders()}
             onParameterChange={handleParameterChange}
+            onEvolve={handleEvolve}
+            onCancelEvolution={handleCancelEvolution}
+            onPromoteChild={handlePromoteChild}
           />
 
           <Show when={resultStore.isProcessing}>
@@ -254,6 +405,12 @@ export const App: Component = () => {
           </Show>
         </main>
       </Show>
+
+      <LogOverlay
+        logs={logs()}
+        isOpen={logOverlayOpen()}
+        onToggle={() => setLogOverlayOpen(!logOverlayOpen())}
+      />
     </div>
   );
 };

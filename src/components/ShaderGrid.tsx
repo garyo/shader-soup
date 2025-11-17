@@ -4,12 +4,15 @@
 
 import { type Component, For } from 'solid-js';
 import { ShaderCard } from './ShaderCard';
-import { shaderStore, resultStore } from '@/stores';
+import { resultStore } from '@/stores';
 import type { ShaderDefinition } from '@/types/core';
 
 interface ShaderGridProps {
   shaders: ShaderDefinition[];
   onParameterChange: (shaderId: string, paramName: string, value: number) => void;
+  onEvolve: (shaderId: string) => void;
+  onCancelEvolution: (shaderId: string) => void;
+  onPromoteChild: (child: ShaderDefinition) => void;
 }
 
 export const ShaderGrid: Component<ShaderGridProps> = (props) => {
@@ -24,6 +27,9 @@ export const ShaderGrid: Component<ShaderGridProps> = (props) => {
             onParameterChange={(paramName, value) =>
               props.onParameterChange(shader.id, paramName, value)
             }
+            onEvolve={props.onEvolve}
+            onCancelEvolution={props.onCancelEvolution}
+            onPromoteChild={props.onPromoteChild}
           />
         )}
       </For>

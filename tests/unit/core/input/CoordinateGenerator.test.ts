@@ -34,7 +34,7 @@ describe('CoordinateGenerator', () => {
 
     it('should handle aspect ratio correctly', () => {
       const dimensions = { width: 100, height: 50 };
-      const coords = generator.generateGrid(dimensions);
+      generator.generateGrid(dimensions);
 
       // Width should always be -1 to 1
       // Height should be scaled by aspect ratio

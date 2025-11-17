@@ -5,6 +5,11 @@
 // @param contrast: 0.5, 2.0, 1.0, 0.05
 // @param brightness: -0.5, 0.5, 0.0, 0.01
 
+struct Dimensions {
+  width: u32,
+  height: u32, _pad1: u32, _pad2: u32
+}
+
 struct Params {
   intensity: f32,
   contrast: f32,
@@ -13,20 +18,18 @@ struct Params {
 
 @group(0) @binding(0) var<storage, read> coords: array<vec2<f32>>;
 @group(0) @binding(1) var<storage, read_write> output: array<vec4<f32>>;
-@group(0) @binding(2) var<uniform> params: Params;
-@group(0) @binding(3) var inputTexture: texture_2d<f32>;
-@group(0) @binding(4) var inputSampler: sampler;
+@group(0) @binding(2) var<uniform> dimensions: Dimensions;
+@group(0) @binding(3) var<uniform> params: Params;
+@group(0) @binding(4) var inputTexture: texture_2d<f32>;
+@group(0) @binding(5) var inputSampler: sampler;
 
 @compute @workgroup_size(8, 8)
 fn main(@builtin(global_invocation_id) id: vec3<u32>) {
-  let width = 512u;
-  let height = 512u;
-
-  if (id.x >= width || id.y >= height) {
+  if (id.x >= dimensions.width || id.y >= dimensions.height) {
     return;
   }
 
-  let index = id.y * width + id.x;
+  let index = id.y * dimensions.width + id.x;
   let coord = coords[index];
 
   // Convert normalized coords (-1 to 1) to texture coords (0 to 1)

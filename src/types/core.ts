@@ -35,7 +35,8 @@ export interface ShaderParameter {
  */
 export interface ShaderDefinition {
   id: string;
-  name: string;
+  name: string; // User-friendly display name
+  cacheKey: string; // Internal unique name for compilation/caching
   source: string;
   parameters: ShaderParameter[];
   description?: string;

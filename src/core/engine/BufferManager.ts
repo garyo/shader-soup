@@ -278,7 +278,9 @@ export class BufferManager {
     usage: GPUBufferUsageFlags,
     label?: string
   ): GPUBuffer {
-    const size = data instanceof ArrayBuffer ? data.byteLength : data.buffer.byteLength;
+    const size = data instanceof ArrayBuffer
+      ? data.byteLength
+      : (data as ArrayBufferView).byteLength;
 
     const buffer = this.createBuffer({ size, usage, label }, false);
     this.writeToBuffer(buffer, data);

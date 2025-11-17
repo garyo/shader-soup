@@ -9,5 +9,6 @@ export default defineConfig({
       exclude: ['@webgpu/types'],
     },
     assetsInclude: ['**/*.wgsl'],
+    envPrefix: 'VITE_', // Explicitly enable VITE_ prefixed env vars
   },
 });

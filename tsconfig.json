@@ -3,6 +3,7 @@
   "compilerOptions": {
     // Enable latest features
     "lib": ["ESNext", "DOM", "DOM.Iterable"],
+    "types": ["@webgpu/types"],
     "target": "ESNext",
     "module": "ESNext",
     "moduleDetection": "force",

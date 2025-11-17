@@ -6,6 +6,7 @@ import { BufferManager } from '../engine/BufferManager';
 import { WebGPUContext } from '../engine/WebGPUContext';
 import type { Dimensions } from '@/types/core';
 import conversionShaderSource from '@/shaders/utils/float-to-uint8.wgsl?raw';
+import downsampleShaderSource from '@/shaders/utils/downsample.wgsl?raw';
 
 export class ResultRenderer {
   private bufferManager: BufferManager;
@@ -13,18 +14,21 @@ export class ResultRenderer {
   private useOffscreenCanvas: boolean;
   private conversionPipeline: GPUComputePipeline | null = null;
   private conversionBindGroupLayout: GPUBindGroupLayout | null = null;
+  private downsamplePipeline: GPUComputePipeline | null = null;
+  private downsampleBindGroupLayout: GPUBindGroupLayout | null = null;
 
   constructor(bufferManager: BufferManager, context: WebGPUContext) {
     this.bufferManager = bufferManager;
     this.context = context;
     this.useOffscreenCanvas = typeof OffscreenCanvas !== 'undefined';
     this.initializeConversionPipeline();
+    this.initializeDownsamplePipeline();
   }
 
   /**
    * Initialize GPU-based f32-to-uint8 conversion pipeline
    */
-  private async initializeConversionPipeline(): Promise<void> {
+  private initializeConversionPipeline(): void {
     const device = this.context.getDevice();
 
     // Compile conversion shader
@@ -61,6 +65,126 @@ export class ResultRenderer {
         entryPoint: 'main',
       },
     });
+  }
+
+  /**
+   * Initialize GPU-based downsampling pipeline
+   */
+  private initializeDownsamplePipeline(): void {
+    const device = this.context.getDevice();
+
+    // Compile downsample shader
+    const shaderModule = device.createShaderModule({
+      label: 'downsample-shader',
+      code: downsampleShaderSource,
+    });
+
+    // Create bind group layout
+    this.downsampleBindGroupLayout = device.createBindGroupLayout({
+      label: 'downsample-bind-group-layout',
+      entries: [
+        {
+          binding: 0,
+          visibility: GPUShaderStage.COMPUTE,
+          buffer: { type: 'read-only-storage' },
+        },
+        {
+          binding: 1,
+          visibility: GPUShaderStage.COMPUTE,
+          buffer: { type: 'storage' },
+        },
+        {
+          binding: 2,
+          visibility: GPUShaderStage.COMPUTE,
+          buffer: { type: 'uniform' },
+        },
+      ],
+    });
+
+    // Create pipeline
+    this.downsamplePipeline = device.createComputePipeline({
+      label: 'downsample-pipeline',
+      layout: device.createPipelineLayout({
+        bindGroupLayouts: [this.downsampleBindGroupLayout],
+      }),
+      compute: {
+        module: shaderModule,
+        entryPoint: 'main',
+      },
+    });
+  }
+
+  /**
+   * Downsample image on GPU using box filter
+   * @param sourceBuffer - Source buffer at higher resolution
+   * @param sourceDimensions - Source dimensions
+   * @param targetDimensions - Target dimensions
+   * @param factor - Downsampling factor
+   * @returns Downsampled GPU buffer
+   */
+  public downsample(
+    sourceBuffer: GPUBuffer,
+    sourceDimensions: Dimensions,
+    targetDimensions: Dimensions,
+    factor: number
+  ): GPUBuffer {
+    const device = this.context.getDevice();
+    const pixelCount = targetDimensions.width * targetDimensions.height;
+
+    // Create output buffer
+    const outputBuffer = this.bufferManager.createBuffer(
+      {
+        size: pixelCount * 16, // vec4<f32> = 16 bytes per pixel
+        usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC,
+        label: 'downsampled-output',
+      },
+      false
+    );
+
+    if (!this.downsamplePipeline || !this.downsampleBindGroupLayout) {
+      throw new Error('Downsample pipeline not initialized');
+    }
+
+    // Create params buffer
+    const params = new Uint32Array([
+      sourceDimensions.width,
+      sourceDimensions.height,
+      targetDimensions.width,
+      targetDimensions.height,
+      factor,
+    ]);
+    const paramsBuffer = this.bufferManager.createBufferWithData(
+      params as BufferSource,
+      GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+      'downsample-params'
+    );
+
+    // Create bind group
+    const bindGroup = device.createBindGroup({
+      label: 'downsample-bind-group',
+      layout: this.downsampleBindGroupLayout,
+      entries: [
+        { binding: 0, resource: { buffer: sourceBuffer } },
+        { binding: 1, resource: { buffer: outputBuffer } },
+        { binding: 2, resource: { buffer: paramsBuffer } },
+      ],
+    });
+
+    // Execute downsampling
+    const encoder = device.createCommandEncoder({ label: 'downsample-encoder' });
+    const pass = encoder.beginComputePass({ label: 'downsample-pass' });
+    pass.setPipeline(this.downsamplePipeline);
+    pass.setBindGroup(0, bindGroup);
+
+    // Dispatch: 8x8 workgroups
+    const workgroupsX = Math.ceil(targetDimensions.width / 8);
+    const workgroupsY = Math.ceil(targetDimensions.height / 8);
+    pass.dispatchWorkgroups(workgroupsX, workgroupsY);
+    pass.end();
+
+    device.queue.submit([encoder.finish()]);
+
+    return outputBuffer;
   }
 
   /**

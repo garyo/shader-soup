@@ -2,20 +2,27 @@
  * Shader Card - Display shader result with parameter controls
  */
 
-import { type Component, onMount, createEffect, For, Show } from 'solid-js';
+import { type Component, createEffect, For, Show, createSignal } from 'solid-js';
 import { ParameterSlider } from './ParameterSlider';
+import { EvolutionStatus } from './EvolutionStatus';
+import { ChildrenGrid } from './ChildrenGrid';
+import { ShaderCodeModal } from './ShaderCodeModal';
 import type { ShaderDefinition, ShaderResult } from '@/types/core';
-import { shaderStore } from '@/stores';
+import { shaderStore, evolutionStore } from '@/stores';
 
 interface ShaderCardProps {
   shader: ShaderDefinition;
   result?: ShaderResult;
   error?: string;
   onParameterChange: (paramName: string, value: number) => void;
+  onEvolve: (shaderId: string) => void;
+  onCancelEvolution: (shaderId: string) => void;
+  onPromoteChild: (child: ShaderDefinition) => void;
 }
 
 export const ShaderCard: Component<ShaderCardProps> = (props) => {
   let canvasRef: HTMLCanvasElement | undefined;
+  const [showCodeModal, setShowCodeModal] = createSignal(false);
 
   // Draw result to canvas when it changes
   createEffect(() => {
@@ -28,6 +35,9 @@ export const ShaderCard: Component<ShaderCardProps> = (props) => {
   });
 
   const paramValues = () => shaderStore.getParameterValues(props.shader.id) || new Map();
+  const evolutionProgress = () => evolutionStore.getProgress(props.shader.id);
+  const children = () => evolutionStore.getChildren(props.shader.id);
+  const isEvolving = () => evolutionStore.isEvolving(props.shader.id);
 
   return (
     <div class="shader-card">
@@ -77,6 +87,42 @@ export const ShaderCard: Component<ShaderCardProps> = (props) => {
         <div class="shader-description">
           <p>{props.shader.description}</p>
         </div>
+      </Show>
+
+      {/* View Code Button */}
+      <button onClick={() => setShowCodeModal(true)} class="view-code-button">
+        📄 View Code
+      </button>
+
+      {/* Evolution Controls */}
+      <Show when={!isEvolving()}>
+        <button onClick={() => props.onEvolve(props.shader.id)} class="evolve-button">
+          🧬 Evolve
+        </button>
+      </Show>
+
+      {/* Evolution Status */}
+      <Show when={evolutionProgress()}>
+        {(progress) => (
+          <EvolutionStatus
+            progress={progress()}
+            onCancel={() => props.onCancelEvolution(props.shader.id)}
+          />
+        )}
+      </Show>
+
+      {/* Evolved Children */}
+      <Show when={children().length > 0}>
+        <ChildrenGrid children={children()} onPromote={props.onPromoteChild} />
+      </Show>
+
+      {/* Shader Code Modal */}
+      <Show when={showCodeModal()}>
+        <ShaderCodeModal
+          shaderName={props.shader.name}
+          shaderSource={props.shader.source}
+          onClose={() => setShowCodeModal(false)}
+        />
       </Show>
     </div>
   );
