@@ -76,10 +76,19 @@ export class WebGPUContext {
       throw new WebGPUNotSupportedError('Failed to request WebGPU adapter');
     }
 
+    // Check if shader-f16 is supported
+    const features: GPUFeatureName[] = [];
+    if (this.adapter.features.has('shader-f16')) {
+      features.push('shader-f16');
+      console.log('[WebGPU] shader-f16 feature available and enabled');
+    } else {
+      console.warn('[WebGPU] shader-f16 feature not available');
+    }
+
     // Request device
     try {
       this.device = await this.adapter.requestDevice({
-        requiredFeatures: [],
+        requiredFeatures: features,
         requiredLimits: {},
       });
 

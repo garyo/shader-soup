@@ -8,7 +8,7 @@ import { Toolbar } from './Toolbar';
 import { LogOverlay, type LogEntry } from './LogOverlay';
 import WebGPUCheck from './WebGPUCheck';
 import { shaderStore, inputStore, resultStore, evolutionStore } from '@/stores';
-import { getWebGPUContext } from '@/core/engine/WebGPUContext';
+import { getWebGPUContext, WebGPUContext } from '@/core/engine/WebGPUContext';
 import { ShaderCompiler } from '@/core/engine/ShaderCompiler';
 import { BufferManager } from '@/core/engine/BufferManager';
 import { ParameterManager } from '@/core/engine/ParameterManager';
@@ -44,6 +44,7 @@ export const App: Component = () => {
   // GPU downsampling is now handled in ResultRenderer
 
   // WebGPU components
+  let context: WebGPUContext;
   let compiler: ShaderCompiler;
   let bufferManager: BufferManager;
   let parameterManager: ParameterManager;
@@ -57,7 +58,7 @@ export const App: Component = () => {
   onMount(async () => {
     try {
       // Initialize WebGPU
-      const context = await getWebGPUContext();
+      context = await getWebGPUContext();
 
       // Create engine components
       compiler = new ShaderCompiler(context);
@@ -93,6 +94,9 @@ export const App: Component = () => {
   });
 
   const loadExampleShaders = () => {
+    // Clear existing example shaders before loading to prevent duplication on hot reload
+    shaderStore.clearExampleShaders();
+
     const examples: Array<{ name: string; source: string; description: string }> = [
       {
         name: 'Sine Wave',
@@ -151,13 +155,9 @@ export const App: Component = () => {
         height: dimensions.height * supersampleFactor,
       };
 
-      // Generate coordinates at supersampled resolution
-      const coords = coordGenerator.generateGrid(superDimensions);
-      const coordBuffer = bufferManager.createBufferWithData(
-        coords as BufferSource,
-        GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
-        'coords'
-      );
+      // Create coordinate texture and sampler at supersampled resolution
+      const coordTexture = coordGenerator.createCoordinateTexture(superDimensions, context);
+      const coordSampler = coordGenerator.createCoordinateSampler(context);
 
       // Create output buffer at supersampled resolution (RGBA format: 4 bytes per pixel)
       const outputSize = superDimensions.width * superDimensions.height * 4 * 4; // vec4<f32> = 16 bytes per pixel
@@ -203,7 +203,8 @@ export const App: Component = () => {
       const layout = pipelineBuilder.createStandardLayout(hasParams, false, shader.cacheKey);
       const bindGroup = pipelineBuilder.createStandardBindGroup(
         layout,
-        coordBuffer,
+        coordTexture,
+        coordSampler,
         outputBuffer,
         dimensionsBuffer,
         paramBuffer

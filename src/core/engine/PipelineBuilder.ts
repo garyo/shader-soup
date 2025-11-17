@@ -131,43 +131,53 @@ export class PipelineBuilder {
   }
 
   /**
-   * Create a bind group layout for typical shader inputs
-   * - Binding 0: Input coordinates (storage, read-only)
-   * - Binding 1: Output buffer (storage, read-write)
-   * - Binding 2: Dimensions (uniform, always present)
-   * - Binding 3: Parameters (uniform, optional)
-   * - Binding 4: Input texture (optional)
+   * Create a bind group layout for typical shader inputs (texture-based coords)
+   * - Binding 0: Coordinate texture (texture_2d<f32>)
+   * - Binding 1: Coordinate sampler (sampler with mirror-repeat)
+   * - Binding 2: Output buffer (storage, read-write)
+   * - Binding 3: Dimensions (uniform, always present)
+   * - Binding 4: Parameters (uniform, optional)
+   * - Binding 5-6: Input texture/sampler (optional)
    *
    * @param hasParams - Whether shader has parameters
-   * @param hasTexture - Whether shader has input texture
+   * @param hasInputTexture - Whether shader has input texture (for image processing)
    * @param label - Optional label
    * @returns GPU bind group layout
    */
   public createStandardLayout(
     hasParams: boolean = false,
-    hasTexture: boolean = false,
+    hasInputTexture: boolean = false,
     label?: string
   ): GPUBindGroupLayout {
     const entries: GPUBindGroupLayoutEntry[] = [
-      // Binding 0: Input coordinates (read-only storage)
+      // Binding 0: Coordinate texture (rgba16float is filterable)
       {
         binding: 0,
         visibility: GPUShaderStage.COMPUTE,
-        buffer: {
-          type: 'read-only-storage',
+        texture: {
+          sampleType: 'float',
+          viewDimension: '2d',
         },
       },
-      // Binding 1: Output buffer (read-write storage)
+      // Binding 1: Coordinate sampler (filtering for rgba16float)
       {
         binding: 1,
+        visibility: GPUShaderStage.COMPUTE,
+        sampler: {
+          type: 'filtering',
+        },
+      },
+      // Binding 2: Output buffer (read-write storage)
+      {
+        binding: 2,
         visibility: GPUShaderStage.COMPUTE,
         buffer: {
           type: 'storage',
         },
       },
-      // Binding 2: Dimensions (uniform, always present)
+      // Binding 3: Dimensions (uniform, always present)
       {
-        binding: 2,
+        binding: 3,
         visibility: GPUShaderStage.COMPUTE,
         buffer: {
           type: 'uniform',
@@ -175,10 +185,10 @@ export class PipelineBuilder {
       },
     ];
 
-    // Binding 3: Parameters (uniform)
+    // Binding 4: Parameters (uniform)
     if (hasParams) {
       entries.push({
-        binding: 3,
+        binding: 4,
         visibility: GPUShaderStage.COMPUTE,
         buffer: {
           type: 'uniform',
@@ -186,10 +196,10 @@ export class PipelineBuilder {
       });
     }
 
-    // Binding 4: Input texture (optional)
-    if (hasTexture) {
+    // Binding 5-6: Input texture and sampler (optional, for image processing)
+    if (hasInputTexture) {
       entries.push({
-        binding: 4,
+        binding: 5,
         visibility: GPUShaderStage.COMPUTE,
         texture: {
           sampleType: 'float',
@@ -197,9 +207,8 @@ export class PipelineBuilder {
         },
       });
 
-      // Binding 5: Sampler for texture
       entries.push({
-        binding: 5,
+        binding: 6,
         visibility: GPUShaderStage.COMPUTE,
         sampler: {
           type: 'filtering',
@@ -211,59 +220,65 @@ export class PipelineBuilder {
   }
 
   /**
-   * Create a standard bind group for shader execution
+   * Create a standard bind group for shader execution (texture-based coords)
    * @param layout - Bind group layout
-   * @param coordBuffer - Coordinate buffer
+   * @param coordTexture - Coordinate texture
+   * @param coordSampler - Coordinate sampler
    * @param outputBuffer - Output buffer
    * @param dimensionsBuffer - Dimensions buffer (always required)
    * @param paramBuffer - Optional parameter buffer
-   * @param texture - Optional input texture
-   * @param sampler - Optional sampler (required if texture provided)
+   * @param inputTexture - Optional input texture (for image processing)
+   * @param inputSampler - Optional input sampler (required if inputTexture provided)
    * @param label - Optional label
    * @returns GPU bind group
    */
   public createStandardBindGroup(
     layout: GPUBindGroupLayout,
-    coordBuffer: GPUBuffer,
+    coordTexture: GPUTexture,
+    coordSampler: GPUSampler,
     outputBuffer: GPUBuffer,
     dimensionsBuffer: GPUBuffer,
     paramBuffer?: GPUBuffer,
-    texture?: GPUTexture,
-    sampler?: GPUSampler,
+    inputTexture?: GPUTexture,
+    inputSampler?: GPUSampler,
     label?: string
   ): GPUBindGroup {
     const bindings: ResourceBinding[] = [
       {
         binding: 0,
-        resource: { buffer: coordBuffer },
+        resource: coordTexture.createView(),
       },
       {
         binding: 1,
-        resource: { buffer: outputBuffer },
+        resource: coordSampler,
       },
       {
         binding: 2,
+        resource: { buffer: outputBuffer },
+      },
+      {
+        binding: 3,
         resource: { buffer: dimensionsBuffer },
       },
     ];
 
     if (paramBuffer) {
       bindings.push({
-        binding: 3,
+        binding: 4,
         resource: { buffer: paramBuffer },
       });
     }
 
-    if (texture) {
+    if (inputTexture) {
       bindings.push({
-        binding: 4,
-        resource: texture.createView(),
+        binding: 5,
+        resource: inputTexture.createView(),
       });
 
-      if (sampler) {
+      if (inputSampler) {
         bindings.push({
-          binding: 5,
-          resource: sampler,
+          binding: 6,
+          resource: inputSampler,
         });
       }
     }

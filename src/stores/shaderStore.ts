@@ -245,6 +245,25 @@ export const shaderStore = {
   },
 
   /**
+   * Clear only non-promoted (example) shaders
+   */
+  clearExampleShaders() {
+    const shadersToRemove: string[] = [];
+
+    // Find all non-promoted shaders
+    for (const [id, _shader] of state.shaders) {
+      if (!state.promotedShaderIds.has(id)) {
+        shadersToRemove.push(id);
+      }
+    }
+
+    // Remove each non-promoted shader
+    for (const id of shadersToRemove) {
+      this.removeShader(id);
+    }
+  },
+
+  /**
    * Add a promoted shader (marks it for localStorage persistence)
    */
   addPromotedShader(shader: ShaderDefinition) {

@@ -1,8 +1,9 @@
 /**
- * Coordinate Generator - Generate normalized coordinate grids
+ * Coordinate Generator - Generate normalized coordinate grids and textures
  */
 
 import type { Dimensions } from '@/types/core';
+import type { WebGPUContext } from '../engine/WebGPUContext';
 
 /**
  * Coordinate system:
@@ -193,5 +194,140 @@ export class CoordinateGenerator {
     }
 
     return distances;
+  }
+
+  /**
+   * Create a GPU texture containing normalized coordinates
+   * GPU-side generation using compute shader with f16 support
+   * @param dimensions - Texture dimensions
+   * @param context - WebGPU context
+   * @returns GPU texture with rgba16float format containing (x, y) coords
+   */
+  public createCoordinateTexture(dimensions: Dimensions, context: WebGPUContext): GPUTexture {
+    const device = context.getDevice();
+    const { width, height } = dimensions;
+
+    // Create compute shader that generates f16 coordinates on GPU
+    const shaderCode = `
+      enable f16;
+
+      struct Dimensions {
+        width: u32,
+        height: u32,
+      }
+
+      @group(0) @binding(0) var<storage, read_write> coords: array<vec4<f16>>;
+      @group(0) @binding(1) var<uniform> dims: Dimensions;
+
+      @compute @workgroup_size(8, 8)
+      fn main(@builtin(global_invocation_id) id: vec3<u32>) {
+        if (id.x >= dims.width || id.y >= dims.height) {
+          return;
+        }
+
+        let index = id.y * dims.width + id.x;
+        let aspectRatio = f32(dims.width) / f32(dims.height);
+
+        // Normalize X to -1 to 1
+        let normalizedX = (f32(id.x) / f32(dims.width - 1u)) * 2.0 - 1.0;
+
+        // Normalize Y to maintain aspect ratio, centered at 0
+        let normalizedY = ((f32(id.y) / f32(dims.height - 1u)) * 2.0 - 1.0) / aspectRatio;
+
+        coords[index] = vec4<f16>(f16(normalizedX), f16(normalizedY), f16(0.0), f16(1.0));
+      }
+    `;
+
+    const shaderModule = device.createShaderModule({
+      label: 'coord-generator-f16',
+      code: shaderCode,
+    });
+
+    // Create storage buffer for f16 coordinates
+    const coordBufferSize = width * height * 4 * 2; // vec4<f16> = 8 bytes
+    const coordBuffer = device.createBuffer({
+      label: 'coord-buffer-f16',
+      size: coordBufferSize,
+      usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC,
+    });
+
+    // Create dimensions uniform
+    const dimsData = new Uint32Array([width, height]);
+    const dimsBuffer = device.createBuffer({
+      label: 'dims-uniform',
+      size: 8,
+      usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+    });
+    device.queue.writeBuffer(dimsBuffer, 0, dimsData);
+
+    // Create bind group layout and bind group
+    const bindGroupLayout = device.createBindGroupLayout({
+      entries: [
+        { binding: 0, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'storage' } },
+        { binding: 1, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'uniform' } },
+      ],
+    });
+
+    const bindGroup = device.createBindGroup({
+      layout: bindGroupLayout,
+      entries: [
+        { binding: 0, resource: { buffer: coordBuffer } },
+        { binding: 1, resource: { buffer: dimsBuffer } },
+      ],
+    });
+
+    // Create pipeline
+    const pipeline = device.createComputePipeline({
+      label: 'coord-generator-pipeline-f16',
+      layout: device.createPipelineLayout({ bindGroupLayouts: [bindGroupLayout] }),
+      compute: { module: shaderModule, entryPoint: 'main' },
+    });
+
+    // Execute compute shader to generate f16 coordinates
+    const commandEncoder = device.createCommandEncoder();
+    const passEncoder = commandEncoder.beginComputePass();
+    passEncoder.setPipeline(pipeline);
+    passEncoder.setBindGroup(0, bindGroup);
+    const workgroupsX = Math.ceil(width / 8);
+    const workgroupsY = Math.ceil(height / 8);
+    passEncoder.dispatchWorkgroups(workgroupsX, workgroupsY);
+    passEncoder.end();
+
+    // Create texture
+    const texture = device.createTexture({
+      label: 'coordinate-texture',
+      size: { width, height },
+      format: 'rgba16float',
+      usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST,
+    });
+
+    // Copy f16 buffer to texture (f16 → f16, no conversion)
+    const bytesPerRow = Math.ceil((width * 8) / 256) * 256;
+    commandEncoder.copyBufferToTexture(
+      { buffer: coordBuffer, bytesPerRow },
+      { texture },
+      { width, height }
+    );
+
+    device.queue.submit([commandEncoder.finish()]);
+
+    return texture;
+  }
+
+  /**
+   * Create a sampler with mirror addressing mode
+   * @param context - WebGPU context
+   * @returns GPU sampler with mirror-repeat mode and linear filtering
+   */
+  public createCoordinateSampler(context: WebGPUContext): GPUSampler {
+    const device = context.getDevice();
+
+    return device.createSampler({
+      label: 'coordinate-sampler',
+      addressModeU: 'mirror-repeat',
+      addressModeV: 'mirror-repeat',
+      magFilter: 'linear',
+      minFilter: 'linear',
+    });
   }
 }

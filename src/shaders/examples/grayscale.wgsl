@@ -16,12 +16,13 @@ struct Params {
   brightness: f32,
 }
 
-@group(0) @binding(0) var<storage, read> coords: array<vec2<f32>>;
-@group(0) @binding(1) var<storage, read_write> output: array<vec4<f32>>;
-@group(0) @binding(2) var<uniform> dimensions: Dimensions;
-@group(0) @binding(3) var<uniform> params: Params;
-@group(0) @binding(4) var inputTexture: texture_2d<f32>;
-@group(0) @binding(5) var inputSampler: sampler;
+@group(0) @binding(0) var coordTexture: texture_2d<f32>;
+@group(0) @binding(1) var coordSampler: sampler;
+@group(0) @binding(2) var<storage, read_write> output: array<vec4<f32>>;
+@group(0) @binding(3) var<uniform> dimensions: Dimensions;
+@group(0) @binding(4) var<uniform> params: Params;
+@group(0) @binding(5) var inputTexture: texture_2d<f32>;
+@group(0) @binding(6) var inputSampler: sampler;
 
 @compute @workgroup_size(8, 8)
 fn main(@builtin(global_invocation_id) id: vec3<u32>) {
@@ -30,16 +31,20 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
   }
 
   let index = id.y * dimensions.width + id.x;
-  let coord = coords[index];
+  let texCoord = vec2<f32>(
+    f32(id.x) / f32(dimensions.width),
+    f32(id.y) / f32(dimensions.height)
+  );
+  let coord = textureSampleLevel(coordTexture, coordSampler, texCoord, 0.0).rg;
 
   // Convert normalized coords (-1 to 1) to texture coords (0 to 1)
-  let texCoord = vec2<f32>(
+  let inputTexCoord = vec2<f32>(
     (coord.x + 1.0) * 0.5,
     (coord.y + 1.0) * 0.5
   );
 
   // Sample texture
-  let color = textureSampleLevel(inputTexture, inputSampler, texCoord, 0.0);
+  let color = textureSampleLevel(inputTexture, inputSampler, inputTexCoord, 0.0);
 
   // Calculate grayscale using luminance formula
   let gray = dot(color.rgb, vec3<f32>(0.299, 0.587, 0.114));

@@ -81,7 +81,13 @@ MUTATION GUIDELINES:
 - Experiment with color schemes: HSV conversions, complementary colors, gradients, discrete color palettes, noise-based coloring
 - You MUST preserve the overall structure:
   * Keep @compute @workgroup_size annotation
-  * Keep @group and @binding declarations for coords, output${params.preserveParams ? ', and params' : ''}
+  * Keep @group and @binding declarations with the REQUIRED binding layout:
+    - @binding(0): coordTexture: texture_2d<f32>
+    - @binding(1): coordSampler: sampler
+    - @binding(2): output: array<vec4<f32>>
+    - @binding(3): dimensions: Dimensions (uniform)
+    - @binding(4): params: Params (uniform, optional)
+  * Sample coordinates using: textureSampleLevel(coordTexture, coordSampler, texCoord, 0.0).rg
   * Keep the main function signature
 ${params.preserveParams ? '  * Keep all @param comments with same format: // @param name: min, max, default, step' : '  * You may add, remove, or modify @param comments'}
 - The shader should still compile and produce visual output
@@ -152,7 +158,15 @@ CRITICAL REQUIREMENTS:
 TECHNICAL CONSTRAINTS:
 - You MUST preserve the structure in each variation:
   * Keep @compute @workgroup_size annotation
-  * Keep @group and @binding declarations for coords, output${params.preserveParams ? ', and params' : ''}
+  * Keep @group and @binding declarations with the REQUIRED binding layout:
+    - @binding(0): coordTexture: texture_2d<f32>
+    - @binding(1): coordSampler: sampler
+    - @binding(2): output: array<vec4<f32>>
+    - @binding(3): dimensions: Dimensions (uniform)
+    - @binding(4): params: Params (uniform, optional)
+  * Calculate texCoord and sample coordinates like:
+    let texCoord = vec2<f32>(f32(id.x) / f32(dimensions.width), f32(id.y) / f32(dimensions.height));
+    let coord = textureSampleLevel(coordTexture, coordSampler, texCoord, 0.0).rg;
   * Keep the main function signature
 ${params.preserveParams ? '  * Keep all @param comments with same format: // @param name: min, max, default, step' : '  * You may add, remove, or modify @param comments, keeping the same format'}
 - Each shader must compile and produce visual output
@@ -249,7 +263,14 @@ All shaders have access to these noise functions (automatically included):
 DEBUG INSTRUCTIONS (Attempt ${params.attempt}):
 - Fix ALL compilation errors
 - Preserve the shader's creative visual logic as much as possible
-- Maintain the structure: @compute, @group/@binding declarations, @param comments
+- Maintain the REQUIRED binding structure:
+  * @binding(0): coordTexture: texture_2d<f32>
+  * @binding(1): coordSampler: sampler
+  * @binding(2): output buffer
+  * @binding(3): dimensions uniform
+  * @binding(4): params uniform (optional)
+- Ensure coordinates are sampled using textureSampleLevel(coordTexture, coordSampler, texCoord, 0.0).rg
+- Maintain @compute, @param comments
 - Common WGSL issues to watch for:
   * Type mismatches (f32 vs u32 vs i32)
   * Missing semicolons or incorrect syntax

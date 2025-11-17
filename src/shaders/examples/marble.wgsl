@@ -24,10 +24,11 @@ struct Params {
   colorShift: f32,
 }
 
-@group(0) @binding(0) var<storage, read> coords: array<vec2<f32>>;
-@group(0) @binding(1) var<storage, read_write> output: array<vec4<f32>>;
-@group(0) @binding(2) var<uniform> dimensions: Dimensions;
-@group(0) @binding(3) var<uniform> params: Params;
+@group(0) @binding(0) var coordTexture: texture_2d<f32>;
+@group(0) @binding(1) var coordSampler: sampler;
+@group(0) @binding(2) var<storage, read_write> output: array<vec4<f32>>;
+@group(0) @binding(3) var<uniform> dimensions: Dimensions;
+@group(0) @binding(4) var<uniform> params: Params;
 
 @compute @workgroup_size(8, 8)
 fn main(@builtin(global_invocation_id) id: vec3<u32>) {
@@ -36,7 +37,12 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
   }
 
   let index = id.y * dimensions.width + id.x;
-  let coord = coords[index];
+
+  let texCoord = vec2<f32>(
+    f32(id.x) / f32(dimensions.width),
+    f32(id.y) / f32(dimensions.height)
+  );
+  let coord = textureSampleLevel(coordTexture, coordSampler, texCoord, 0.0).rg;
 
   // Scale coordinates
   var p = coord * params.scale;

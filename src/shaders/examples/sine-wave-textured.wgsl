@@ -1,16 +1,14 @@
-// Sine Wave Pattern Generator
-// Creates a wave pattern based on coordinates with adjustable parameters
+// Sine Wave Pattern (Texture-based Coordinates)
+// Creates colorful sine wave patterns using texture coordinate lookups
 
-// @param frequency: 0.0, 20.0, 5.0, 0.1
-// @param amplitude: 0.0, 2.0, 1.0, 0.05
+// @param frequency: 1.0, 20.0, 5.0, 0.5
+// @param amplitude: 0.1, 2.0, 0.5, 0.1
 // @param phase: 0.0, 6.28, 0.0, 0.1
-// @param colorShift: 0.0, 1.0, 0.0, 0.01
+// @param colorShift: 0.0, 6.28, 0.0, 0.1
 
 struct Dimensions {
   width: u32,
   height: u32,
-  _pad1: u32,
-  _pad2: u32,
 }
 
 struct Params {
@@ -33,22 +31,23 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
   }
 
   let index = id.y * dimensions.width + id.x;
+
+  // Calculate texture coordinates (0 to 1)
   let texCoord = vec2<f32>(
     f32(id.x) / f32(dimensions.width),
     f32(id.y) / f32(dimensions.height)
   );
+
+  // Sample normalized coordinates from texture
   let coord = textureSampleLevel(coordTexture, coordSampler, texCoord, 0.0).rg;
 
-  // Create wave pattern
+  // Calculate sine wave
   let wave = sin(coord.x * params.frequency + params.phase) * params.amplitude;
 
-  // Map wave to 0-1 range
-  let brightness = (wave + params.amplitude) / (2.0 * params.amplitude);
-
-  // Create colorful pattern
-  let r = brightness;
-  let g = sin(brightness * 6.28 + params.colorShift) * 0.5 + 0.5;
-  let b = cos(brightness * 6.28 + params.colorShift) * 0.5 + 0.5;
+  // Color based on wave and y coordinate
+  let r = (sin(wave + coord.y + params.colorShift) + 1.0) * 0.5;
+  let g = (sin(wave + coord.y + params.colorShift + 2.094) + 1.0) * 0.5;
+  let b = (sin(wave + coord.y + params.colorShift + 4.189) + 1.0) * 0.5;
 
   output[index] = vec4<f32>(r, g, b, 1.0);
 }
