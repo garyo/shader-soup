@@ -32,9 +32,13 @@ export const App: Component = () => {
   const [logs, setLogs] = createSignal<LogEntry[]>([]);
   const [logOverlayOpen, setLogOverlayOpen] = createSignal(false);
 
-  // Add log entry to the overlay
+  const maxLogEntries = 32;
+  // Add log entry to the overlay (at the end of the list)
   const addLog = (message: string, type: 'info' | 'error' | 'success' = 'info') => {
-    setLogs(prev => [...prev, { timestamp: new Date(), message, type }]);
+    setLogs(prev => {
+     const old = prev.slice(-(maxLogEntries-1));
+     return [...old, { timestamp: new Date(), message, type }];
+    });
   };
 
   // GPU downsampling is now handled in ResultRenderer
