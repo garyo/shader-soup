@@ -22,6 +22,7 @@ export interface EvolutionOptions {
   temperature?: number;
   maxDebugAttempts?: number;
   model?: string;
+  batchSize?: number;
 }
 
 export interface EvolutionResult {
@@ -38,6 +39,7 @@ export class ShaderEvolver {
   private maxDebugAttempts: number;
   private temperature: number;
   private model: string;
+  private batchSize: number;
 
   constructor(
     apiKey: string,
@@ -52,12 +54,13 @@ export class ShaderEvolver {
     this.compiler = compiler;
     this.parameterManager = parameterManager;
     this.maxDebugAttempts = options?.maxDebugAttempts ?? 5;
-    this.model = options?.model ?? 'claude-sonnet-4-5';
+    this.model = options?.model ?? 'claude-haiku-4-5'; // claude-haiku-4-5 or claude-haiku-4-5
     this.temperature = options?.temperature ?? 0.5; // TODO use defaultTemperature
+    this.batchSize = options?.batchSize ?? 2; // Generate 2 shaders per API call for better performance
   }
 
   /**
-   * Evolve multiple shader variations in a single batch call
+   * Evolve multiple shader variations using parallel batch calls
    */
   public async evolveShaderBatch(
     parentShader: ShaderDefinition,
@@ -68,8 +71,23 @@ export class ShaderEvolver {
     const effectiveTemp = temperature ?? this.temperature;
 
     try {
-      // Generate all mutations in one API call
-      const mutatedShaders = await this.batchMutateShader(parentShader.source, count, effectiveTemp);
+      // Calculate number of parallel batches needed
+      const numBatches = Math.ceil(count / this.batchSize);
+      console.log(`Generating ${count} children in ${numBatches} parallel batches of ${this.batchSize}`);
+
+      // Create array of batch promises
+      const batchPromises: Promise<string[]>[] = [];
+      for (let batchIndex = 0; batchIndex < numBatches; batchIndex++) {
+        const isLastBatch = batchIndex === numBatches - 1;
+        const batchCount = isLastBatch ? count - (batchIndex * this.batchSize) : this.batchSize;
+        batchPromises.push(this.batchMutateShader(parentShader.source, batchCount, effectiveTemp));
+      }
+
+      // Execute all batches in parallel
+      const batchResults = await Promise.all(batchPromises);
+
+      // Flatten results from all batches
+      const mutatedShaders = batchResults.flat();
 
       const results: EvolutionResult[] = [];
 
@@ -92,9 +110,12 @@ export class ShaderEvolver {
 
           // Parse parameters
           const parameters = this.parameterManager.parseParameters(debugResult.source);
-
-          // Update parameter names
-          const namedParameters = await this.updateParameterNames(debugResult.source, parameters);
+          let namedParameters = parameters;
+          const doParamRename = false;
+          if (doParamRename) {
+            // Update parameter names
+            namedParameters = await this.updateParameterNames(debugResult.source, parameters);
+          }
 
           // Create child shader with hierarchical naming
           const childNumber = i + 1;
@@ -113,7 +134,6 @@ export class ShaderEvolver {
           results.push({
             success: true,
             shader: childShader,
-            debugAttempts: debugResult.attempts,
           });
         } catch (error) {
           results.push({
@@ -143,11 +163,11 @@ export class ShaderEvolver {
       shaderSource,
       count,
       temperature,
-      preserveParams: true,
+      preserveParams: false,
     };
 
     const prompt = createBatchMutationPrompt(promptParams);
-    console.log(`Batch mutating with params ${JSON.stringify(promptParams)}`);
+    console.log(`Batch mutating with ${this.model}, params ${JSON.stringify(promptParams)}`);
 
     // Create messages array for conversation
     const messages: Anthropic.MessageParam[] = [
@@ -159,6 +179,7 @@ export class ShaderEvolver {
 
     // Loop to handle tool calls
     while (true) {
+      const startTime = performance.now();
       const message = await this.anthropic.messages.create({
         model: this.model,
         max_tokens: 16384, // Increased for multiple shaders
@@ -167,8 +188,21 @@ export class ShaderEvolver {
         tool_choice: { type: "tool", name: "shader_output" },
         messages,
       });
+      const elapsed = performance.now() - startTime;
 
-      console.log(`Got response with stop_reason: ${message.stop_reason}`);
+      // Log timing and token usage
+      console.log(`[LLM] Batch mutation call:`, {
+        model: this.model,
+        temperature,
+        count,
+        elapsed_ms: elapsed.toFixed(0),
+        input_tokens: message.usage.input_tokens,
+        output_tokens: message.usage.output_tokens,
+        total_tokens: message.usage.input_tokens + message.usage.output_tokens,
+        stop_reason: message.stop_reason,
+      });
+
+      // console.log(`Got response with stop_reason: ${message.stop_reason}`);
 
       // Check if the model used the tool
       if (message.stop_reason === 'tool_use') {
@@ -179,8 +213,9 @@ export class ShaderEvolver {
         );
 
         if (toolUse) {
-          console.log(`Tool used successfully, extracting shaders`);
-          const input = toolUse.input as { shaders: Array<{ shader: string }> };
+          console.log(`Success: extracting shaders`);
+          const input = toolUse.input as { shaders: Array<{ shader: string, changelog?: string }> };
+          console.log(`Shaders: ${JSON.stringify(input.shaders, null, 2)}`)
           return input.shaders.map(s => s.shader);
         }
       }
@@ -217,6 +252,7 @@ export class ShaderEvolver {
       // If failed and not last attempt, ask LLM to fix
       if (attempts < this.maxDebugAttempts) {
         const errorMessage = ShaderCompiler.formatErrors(result.errors);
+        console.log(`Shader failed to compile on attempt ${attempts}; errs=${errorMessage}. Asking LLM to debug`)
 
         const promptParams: DebugPromptParams = {
           shaderSource: currentSource,
@@ -237,6 +273,7 @@ export class ShaderEvolver {
 
         // Loop to handle tool calls
         while (true) {
+          const startTime = performance.now();
           const message = await this.anthropic.messages.create({
             model: this.model,
             max_tokens: 8192,
@@ -244,6 +281,18 @@ export class ShaderEvolver {
             tools: [debugShaderTool],
             tool_choice: { type: "tool", name: "debug_shader_output" },
             messages,
+          });
+          const elapsed = performance.now() - startTime;
+
+          // Log timing and token usage
+          console.log(`[LLM] Debug shader call (attempt ${attempts}):`, {
+            model: this.model,
+            temperature: 0.3,
+            elapsed_ms: elapsed.toFixed(0),
+            input_tokens: message.usage.input_tokens,
+            output_tokens: message.usage.output_tokens,
+            total_tokens: message.usage.input_tokens + message.usage.output_tokens,
+            stop_reason: message.stop_reason,
           });
 
           console.log(`Debug: got response with stop_reason: ${message.stop_reason}`);
@@ -308,6 +357,7 @@ export class ShaderEvolver {
       // Loop to handle tool calls
       let newNames: string[] = [];
       while (true) {
+        const startTime = performance.now();
         const message = await this.anthropic.messages.create({
           model: this.model,
           max_tokens: 2048,
@@ -315,6 +365,19 @@ export class ShaderEvolver {
           tools: [parameterNamesTool],
           tool_choice: { type: "tool", name: "parameter_names_output" },
           messages,
+        });
+        const elapsed = performance.now() - startTime;
+
+        // Log timing and token usage
+        console.log(`[LLM] Parameter naming call:`, {
+          model: this.model,
+          temperature: 0.3,
+          param_count: parameters.length,
+          elapsed_ms: elapsed.toFixed(0),
+          input_tokens: message.usage.input_tokens,
+          output_tokens: message.usage.output_tokens,
+          total_tokens: message.usage.input_tokens + message.usage.output_tokens,
+          stop_reason: message.stop_reason,
         });
 
         console.log(`Parameter naming: got response with stop_reason: ${message.stop_reason}`);

@@ -281,7 +281,7 @@ export const App: Component = () => {
     if (!shader) return;
 
     // Start evolution
-    const childrenCount = 3;
+    const childrenCount = 6;
     const currentTemp = temperature(); // Get current temperature from signal
     evolutionStore.startEvolution(shaderId, shader.name, childrenCount, currentTemp);
 

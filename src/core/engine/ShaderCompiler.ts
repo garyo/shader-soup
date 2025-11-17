@@ -5,10 +5,12 @@
 import { WebGPUContext } from './WebGPUContext';
 import { ShaderCompilationError } from '@/types/errors';
 import type { CompilationResult, CompilationError } from '@/types/core';
+import noiseLibrary from '@/shaders/utils/noise.wgsl?raw';
 
 export class ShaderCompiler {
   private context: WebGPUContext;
   private compilationCache: Map<string, GPUShaderModule> = new Map();
+  private noiseLibrarySource: string = noiseLibrary;
 
   constructor(context: WebGPUContext) {
     this.context = context;
@@ -19,16 +21,23 @@ export class ShaderCompiler {
    * @param source - WGSL shader source code
    * @param label - Optional label for debugging
    * @param useCache - Whether to use cached compilation results (default: true)
+   * @param includeNoiseLib - Whether to prepend noise library (default: true)
    * @returns Compilation result with module or errors
    */
   public async compile(
     source: string,
     label?: string,
-    useCache: boolean = true
+    useCache: boolean = true,
+    includeNoiseLib: boolean = true
   ): Promise<CompilationResult> {
+    // Prepend noise library if requested
+    const finalSource = includeNoiseLib
+      ? `${this.noiseLibrarySource}\n\n// ===== USER SHADER CODE =====\n\n${source}`
+      : source;
+
     // Check cache if enabled
     if (useCache) {
-      const cached = this.compilationCache.get(source);
+      const cached = this.compilationCache.get(finalSource);
       if (cached) {
         return {
           success: true,
@@ -39,7 +48,7 @@ export class ShaderCompiler {
     }
 
     // Validate source is not empty
-    if (!source || source.trim().length === 0) {
+    if (!finalSource || finalSource.trim().length === 0) {
       return {
         success: false,
         errors: [{ message: 'Shader source code is empty' }],
@@ -52,7 +61,7 @@ export class ShaderCompiler {
       // Create shader module
       const module = device.createShaderModule({
         label: label || 'shader',
-        code: source,
+        code: finalSource,
       });
 
       // Get compilation info
@@ -91,7 +100,7 @@ export class ShaderCompiler {
 
       // Cache successful compilation
       if (useCache) {
-        this.compilationCache.set(source, module);
+        this.compilationCache.set(finalSource, module);
       }
 
       return {

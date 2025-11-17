@@ -45,15 +45,40 @@ ORIGINAL SHADER:
 ${params.shaderSource}
 \`\`\`
 
+AVAILABLE NOISE LIBRARY:
+All shaders have access to a comprehensive noise library that is automatically included. You can use any of these functions:
+
+Hash Functions:
+- pcg(n: u32) -> u32
+- xxhash32(n: u32) -> u32
+- hash21(p: vec2f) -> f32
+- hash22(p: vec2f) -> vec2f
+
+Noise Functions:
+- valueNoise2(p: vec2f) -> f32 - Simple value noise
+- perlinNoise2(p: vec2f) -> f32 - Classic Perlin noise (returns -1 to 1)
+- cellularNoise(p: vec2f) -> f32 - Voronoi-like cellular noise
+
+Fractal/Layered Noise (FBM):
+- fbmPerlin(p: vec2f) -> f32 - 4-octave Perlin FBM
+- fbmValue(p: vec2f) -> f32 - 4-octave value FBM
+- fbmPerlinCustom(p: vec2f, octaves: i32, lacunarity: f32, gain: f32) -> f32
+
+Special Patterns:
+- turbulence(p: vec2f, octaves: i32) -> f32 - Absolute value noise
+- ridgeNoise(p: vec2f, octaves: i32) -> f32 - Inverted ridges
+- domainWarp(p: vec2f, amount: f32) -> vec2f - Distort space with noise
+
 MUTATION GUIDELINES:
 - Make ${changeCount} DISTINCT creative changes to the shader logic
 - Creativity level: ${creativityLevel}
 - Each mutation should produce VISUALLY DIFFERENT results
 - Ideas: change color calculations, add new mathematical functions (sin, cos, abs, fract, mix), alter patterns, combine operations differently, use different coordinate transformations
+- USE THE NOISE LIBRARY: Incorporate perlinNoise2, fbmPerlin, cellularNoise, turbulence, domainWarp, and other noise functions for organic patterns
 - IMPORTANT: Make each mutation VISUALLY DISTINCT from the original and from previous mutations
-- Try different approaches: spiral patterns, wave interference, cellular automata, fractals, noise functions
-- Vary the mathematical operations: use different combinations of trig functions, exponentials, power functions
-- Experiment with color schemes: HSV conversions, complementary colors, gradients, discrete color palettes
+- Try different approaches: spiral patterns, wave interference, cellular automata, fractals, noise functions (Perlin, FBM, cellular, turbulence)
+- Vary the mathematical operations: use different combinations of trig functions, exponentials, power functions, AND noise functions
+- Experiment with color schemes: HSV conversions, complementary colors, gradients, discrete color palettes, noise-based coloring
 - You MUST preserve the overall structure:
   * Keep @compute @workgroup_size annotation
   * Keep @group and @binding declarations for coords, output${params.preserveParams ? ', and params' : ''}
@@ -78,6 +103,37 @@ ORIGINAL SHADER:
 ${params.shaderSource}
 \`\`\`
 
+AVAILABLE NOISE LIBRARY:
+All shaders have access to a comprehensive noise library that is automatically included. You can use any of these functions:
+
+Hash Functions:
+- pcg(n: u32) -> u32
+- xxhash32(n: u32) -> u32
+- hash21(p: vec2f) -> f32 - Hash 2D position to float [0,1]
+- hash22(p: vec2f) -> vec2f - Hash 2D position to vec2 [0,1]
+
+Noise Functions:
+- valueNoise2(p: vec2f) -> f32 - Simple value noise [0,1]
+- perlinNoise2(p: vec2f) -> f32 - Classic Perlin noise (returns ~-1 to 1)
+- cellularNoise(p: vec2f) -> f32 - Voronoi-like cellular noise
+
+Fractal/Layered Noise (FBM - Fractional Brownian Motion):
+- fbmPerlin(p: vec2f) -> f32 - 4-octave Perlin FBM
+- fbmValue(p: vec2f) -> f32 - 4-octave value FBM
+- fbmPerlinCustom(p: vec2f, octaves: i32, lacunarity: f32, gain: f32) -> f32 - Customizable FBM
+
+Special Patterns:
+- turbulence(p: vec2f, octaves: i32) -> f32 - Absolute value noise for turbulent patterns
+- ridgeNoise(p: vec2f, octaves: i32) -> f32 - Inverted ridges for mountain-like patterns
+- domainWarp(p: vec2f, amount: f32) -> vec2f - Distort coordinate space with noise
+
+Example usage:
+  let noise = perlinNoise2(coord * 5.0);  // Scale coordinates for detail level
+  let clouds = fbmPerlin(coord * 3.0);    // Layered noise for clouds
+  let marble = sin(coord.x * 10.0 + turbulence(coord * 5.0, 4) * 3.0);  // Marble veining
+  let warped = domainWarp(coord * 4.0, 0.5);  // Organic distortion
+  let cells = cellularNoise(coord * 8.0);     // Cell-like patterns
+
 CRITICAL REQUIREMENTS:
 - Generate EXACTLY ${params.count} variations
 - Use a temperature of ${params.temperature}: 0 means no change at all (return the original), 1.0 means make many changes
@@ -85,22 +141,25 @@ CRITICAL REQUIREMENTS:
 - Each variation should be SYNTACTICALLY CORRECT to your best approximation (a debugger will run after this)
 - Things you can change:
   - Vary constant values (higher temp = wider variation)
+  - Vary param values and ranges (higher temp = wider variation)
   - Vary operators (+, -, *, /, powers etc.)
-  - Vary functions (replace with other ones, change arg orders
-  - Vary code structure: swap statement orders
-- With a temp of 0.1, change 1 or 2 of each of those. With a temp of 0.5, change around 5 of each of those. With a temp of 1.0, change most of them.
+  - Vary functions: replace with other ones, change arg orders
+  - Add noise functions: Use perlinNoise2, fbmPerlin, cellularNoise, turbulence, domainWarp, etc.
+  - Vary code structure: swap statement orders, add or delete statements or loops or conditionals
+  - Write new functions and use them
+- With a temp of 0.1, change 1 or 2 of each of those. With a temp of 0.5, change around 5 of each of those. With a temp of 1.0, change most of them so the result is very different from the original.
 
 TECHNICAL CONSTRAINTS:
 - You MUST preserve the structure in each variation:
   * Keep @compute @workgroup_size annotation
   * Keep @group and @binding declarations for coords, output${params.preserveParams ? ', and params' : ''}
   * Keep the main function signature
-${params.preserveParams ? '  * Keep all @param comments with same format: // @param name: min, max, default, step' : '  * You may add, remove, or modify @param comments'}
+${params.preserveParams ? '  * Keep all @param comments with same format: // @param name: min, max, default, step' : '  * You may add, remove, or modify @param comments, keeping the same format'}
 - Each shader must compile and produce visual output
 
 OUTPUT FORMAT:
 Use the shader_output tool to return your ${params.count} shader variations.
-The tool expects a JSON object with a "shaders" array, each containing a "shader" field with the complete WGSL code.
+The tool expects a JSON object with a "shaders" array, each containing a "shader" field with the complete WGSL code and optionally a "changelog" field noting significant changes, including how many constants/operators/functions/structural changes were made.
 `;
 }
 
@@ -118,6 +177,10 @@ export const shaderObjectTool: Anthropic.Tool = {
             "shader": {
               "type": "string",
               "description": "The shader code",
+            },
+            "changelog": {
+              "type": "string",
+              "description": "Summary of changes in this version",
             }
           },
           "required": ["shader"]
@@ -176,6 +239,12 @@ ${params.shaderSource}
 
 COMPILATION ERRORS:
 ${params.errors}
+
+AVAILABLE NOISE LIBRARY:
+All shaders have access to these noise functions (automatically included):
+- perlinNoise2, fbmPerlin, fbmValue, fbmPerlinCustom, valueNoise2
+- cellularNoise, turbulence, ridgeNoise, domainWarp
+- hash21, hash22, pcg, xxhash32
 
 DEBUG INSTRUCTIONS (Attempt ${params.attempt}):
 - Fix ALL compilation errors
