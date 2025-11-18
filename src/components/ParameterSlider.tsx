@@ -21,6 +21,7 @@ export const ParameterSlider: Component<ParameterSliderProps> = (props) => {
       max={props.parameter.max}
       step={props.parameter.step}
       onChange={props.onChange}
+      scale="linear"
     />
   );
 };

@@ -241,8 +241,12 @@ CRITICAL REQUIREMENTS:
   - Vary code structure: swap statement orders, add or delete statements or loops or conditionals
   - Write new functions and use them
   - Think about new math operations (abs, mod)
-  - Think about symmetry vs. asymmetry
-  - Add params for interesting constants, and after evolving, delete any params that don't do anything interesting.
+  - Think about symmetry vs. asymmetry: mirror, kaleidoscope, shapes (triangle/square/hex/circles)
+  - Add functions for rotation and other creative coordinate transformations when you feel like it
+  - Don't be afraid to add new functions and use them!
+  - It's OK to add code and change things without knowing what it'll look like. Just be creative.
+  - Add params for interesting constants
+  - After evolving, delete any params that don't do anything interesting.
 - With a temp of 0.1, change 1 or 2 of each of those. With a temp of 0.5, change around 5 of each of those. With a temp of 1.0, change most of them so the result is VERY different from the original.
 - BE CREATIVE!
 

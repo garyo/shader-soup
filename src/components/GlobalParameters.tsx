@@ -20,12 +20,13 @@ export const GlobalParametersComponent: Component<GlobalParametersProps> = (prop
     max: number;
     step: number;
     default: number;
+    scale: 'linear' | 'log';
   }> = [
-    { name: 'brightness', label: 'Brightness', min: -1, max: 1, step: 0.01, default: 0 },
-    { name: 'contrast', label: 'Contrast', min: -1, max: 1, step: 0.01, default: 0 },
-    { name: 'zoom', label: 'Zoom', min: 0.1, max: 10, step: 0.1, default: 1 },
-    { name: 'panX', label: 'Pan X', min: -2, max: 2, step: 0.01, default: 0 },
-    { name: 'panY', label: 'Pan Y', min: -2, max: 2, step: 0.01, default: 0 },
+    { name: 'gamma', label: 'Gamma', min: 0.1, max: 10, step: 0.1, default: 1, scale: 'log' },
+    { name: 'contrast', label: 'Contrast', min: -1, max: 1, step: 0.01, default: 0, scale: 'linear' },
+    { name: 'zoom', label: 'Zoom', min: 0.1, max: 10, step: 0.1, default: 1, scale: 'log' },
+    { name: 'panX', label: 'Pan X', min: -2, max: 2, step: 0.01, default: 0, scale: 'linear' },
+    { name: 'panY', label: 'Pan Y', min: -2, max: 2, step: 0.01, default: 0, scale: 'linear' },
   ];
 
   return (
@@ -38,6 +39,7 @@ export const GlobalParametersComponent: Component<GlobalParametersProps> = (prop
             min={def.min}
             max={def.max}
             step={def.step}
+            scale={def.scale}
             onChange={(value) => props.onChange(def.name, value)}
           />
         )}

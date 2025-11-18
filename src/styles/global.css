@@ -141,12 +141,55 @@ body {
   font-weight: 600;
 }
 
+.shader-info {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
 .execution-time {
   font-size: 0.7rem;
   color: var(--text-muted);
   background: rgba(102, 126, 234, 0.1);
   padding: 0.2rem 0.5rem;
   border-radius: 8px;
+}
+
+.download-shader-button {
+  background: transparent;
+  border: none;
+  font-size: 1rem;
+  cursor: pointer;
+  padding: 0.25rem;
+  opacity: 0.6;
+  transition: opacity 0.2s, transform 0.2s;
+  line-height: 1;
+}
+
+.download-shader-button:hover {
+  opacity: 1;
+  transform: scale(1.1);
+}
+
+.delete-shader-button {
+  background: transparent;
+  border: none;
+  font-size: 1rem;
+  cursor: pointer;
+  padding: 0.25rem;
+  opacity: 0.6;
+  transition: opacity 0.2s, transform 0.2s;
+  line-height: 1;
+}
+
+.delete-shader-button:hover:not(:disabled) {
+  opacity: 1;
+  transform: scale(1.1);
+}
+
+.delete-shader-button:disabled {
+  opacity: 0.3;
+  cursor: not-allowed;
 }
 
 .shader-canvas-container {

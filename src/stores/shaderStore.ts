@@ -8,7 +8,7 @@ import type { ShaderDefinition, ShaderParameter } from '@/types/core';
 const STORAGE_KEY = 'evolve-image-gen-promoted-shaders';
 
 export interface GlobalParameters {
-  brightness: number; // -1 to 1, default 0
+  gamma: number;      // 0.1 to 10, default 1 (higher brightens midtones)
   contrast: number;   // -1 to 1, default 0
   zoom: number;       // 0.1 to 10, default 1
   panX: number;       // -2 to 2, default 0
@@ -16,7 +16,7 @@ export interface GlobalParameters {
 }
 
 export const defaultGlobalParameters: GlobalParameters = {
-  brightness: 0,
+  gamma: 1,
   contrast: 0,
   zoom: 1,
   panX: 0,
@@ -400,6 +400,13 @@ export const shaderStore = {
    */
   getMashupSelectionCount(): number {
     return state.selectedForMashup.size;
+  },
+
+  /**
+   * Check if shader is promoted (saved to localStorage)
+   */
+  isPromoted(id: string): boolean {
+    return state.promotedShaderIds.has(id);
   },
 
   /**

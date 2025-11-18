@@ -85,11 +85,27 @@ export class WebGPUContext {
       console.warn('[WebGPU] shader-f16 feature not available');
     }
 
-    // Request device
+    // Request device with higher buffer size limits for high-res rendering
     try {
+      // Request higher limits if adapter supports them
+      const adapterLimits = this.adapter.limits;
+      const requiredLimits: Record<string, number> = {};
+
+      // Request higher buffer size limit (up to 1GB or adapter max)
+      if (adapterLimits.maxBufferSize > 256 * 1024 * 1024) {
+        requiredLimits.maxBufferSize = Math.min(1024 * 1024 * 1024, adapterLimits.maxBufferSize);
+        console.log(`[WebGPU] Requesting maxBufferSize: ${(requiredLimits.maxBufferSize / 1024 / 1024 / 1024).toFixed(2)} GB`);
+      }
+
+      // Request higher storage buffer binding size (up to 1GB or adapter max)
+      if (adapterLimits.maxStorageBufferBindingSize > 128 * 1024 * 1024) {
+        requiredLimits.maxStorageBufferBindingSize = Math.min(1024 * 1024 * 1024, adapterLimits.maxStorageBufferBindingSize);
+        console.log(`[WebGPU] Requesting maxStorageBufferBindingSize: ${(requiredLimits.maxStorageBufferBindingSize / 1024 / 1024).toFixed(2)} MB`);
+      }
+
       this.device = await this.adapter.requestDevice({
         requiredFeatures: features,
-        requiredLimits: {},
+        requiredLimits,
       });
 
       // Handle device lost

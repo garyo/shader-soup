@@ -227,9 +227,11 @@ export class ResultRenderer {
     pass.setPipeline(this.conversionPipeline);
     pass.setBindGroup(0, bindGroup);
 
-    // Dispatch: 64 pixels per workgroup
-    const workgroupCount = Math.ceil(pixelCount / 64);
-    pass.dispatchWorkgroups(workgroupCount);
+    // Dispatch: Use 2D dispatch to avoid exceeding workgroup limits
+    // Workgroup size is 8x8 = 64 threads
+    const workgroupsX = Math.ceil(dimensions.width / 8);
+    const workgroupsY = Math.ceil(dimensions.height / 8);
+    pass.dispatchWorkgroups(workgroupsX, workgroupsY);
     pass.end();
 
     device.queue.submit([encoder.finish()]);

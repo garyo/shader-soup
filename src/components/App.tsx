@@ -174,7 +174,7 @@ export const App: Component = () => {
       const globalParams = shaderStore.getGlobalParameters(shaderId);
 
       // Create coordinate texture and sampler at supersampled resolution with zoom/pan applied
-      const coordTexture = coordGenerator.createCoordinateTexture(
+      const coordTexture = await coordGenerator.createCoordinateTexture(
         superDimensions,
         context,
         globalParams.zoom,
@@ -332,14 +332,14 @@ export const App: Component = () => {
 
       const execTime = performance.now() - startExec;
 
-      // Apply brightness/contrast post-processing
+      // Apply gamma/contrast post-processing (in linear RGB space)
       // Note: GPU operations are queued in order, so the post-processor will
       // automatically wait for shader execution to complete
       const postProcessStart = performance.now();
-      const processedBuffer = await postProcessor.applyBrightnessContrast(
+      const processedBuffer = await postProcessor.applyGammaContrast(
         outputBuffer,
         superDimensions,
-        globalParams.brightness,
+        globalParams.gamma,
         globalParams.contrast
       );
       const postProcessTime = performance.now() - postProcessStart;
@@ -508,6 +508,260 @@ export const App: Component = () => {
     shaderStore.toggleMashupSelection(shaderId);
   };
 
+  const handleDeleteShader = (shaderId: string) => {
+    const shader = shaderStore.getShader(shaderId);
+    if (!shader) return;
+
+    // Confirm deletion
+    if (confirm(`Delete shader "${shader.name}"? This cannot be undone.`)) {
+      shaderStore.removePromotedShader(shaderId);
+      resultStore.clearError(shaderId);
+      addLog(`Deleted shader "${shader.name}"`);
+    }
+  };
+
+  const handleDownloadShader = async (shaderId: string) => {
+    const shader = shaderStore.getShader(shaderId);
+    if (!shader) return;
+
+    addLog(`Rendering high-res version of "${shader.name}"...`);
+
+    try {
+      // High-res dimensions: 2048x2048
+      const hiResDimensions = { width: 2048, height: 2048 };
+
+      // Supersample at 3x for antialiasing
+      const supersampleFactor = 3;
+      const superDimensions = {
+        width: hiResDimensions.width * supersampleFactor,
+        height: hiResDimensions.height * supersampleFactor,
+      };
+
+      // Get global parameters
+      const globalParams = shaderStore.getGlobalParameters(shaderId);
+
+      // Check GPU limits
+      const limits = context.getDevice().limits;
+      addLog(`GPU max texture dimension: ${limits.maxTextureDimension2D}`);
+      addLog(`GPU max buffer size: ${(limits.maxBufferSize / 1024 / 1024 / 1024).toFixed(2)} GB`);
+      addLog(`GPU max storage buffer binding size: ${(limits.maxStorageBufferBindingSize / 1024 / 1024).toFixed(2)} MB`);
+      addLog(`GPU max compute workgroups per dimension: ${limits.maxComputeWorkgroupsPerDimension}`);
+      addLog(`Requested texture size: ${superDimensions.width}x${superDimensions.height}`);
+
+      // Create coordinate texture with zoom/pan
+      const coordTexture = await coordGenerator.createCoordinateTexture(
+        superDimensions,
+        context,
+        globalParams.zoom,
+        globalParams.panX,
+        globalParams.panY
+      );
+      addLog(`Coordinate texture created: ${coordTexture.width}x${coordTexture.height}`);
+
+      // DEBUG: Verify coordinate texture has data by reading it back
+      const device = context.getDevice();
+      const coordReadBuffer = device.createBuffer({
+        size: 16, // Just read first pixel (vec4<f16> = 8 bytes)
+        usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ,
+        label: 'coord-read-buffer',
+      });
+      const encoder = device.createCommandEncoder();
+      encoder.copyTextureToBuffer(
+        { texture: coordTexture, mipLevel: 0, origin: [0, 0, 0] },
+        { buffer: coordReadBuffer, bytesPerRow: 256, rowsPerImage: 1 },
+        { width: 1, height: 1, depthOrArrayLayers: 1 }
+      );
+      device.queue.submit([encoder.finish()]);
+      await device.queue.onSubmittedWorkDone();
+      await coordReadBuffer.mapAsync(GPUMapMode.READ);
+      const coordData = new Float16Array(coordReadBuffer.getMappedRange());
+      addLog(`Coord texture first pixel: X=${coordData[0].toFixed(3)} Y=${coordData[1].toFixed(3)}`);
+      coordReadBuffer.unmap();
+
+      const coordSampler = coordGenerator.createCoordinateSampler(context);
+
+      // Create output buffer
+      const outputSize = superDimensions.width * superDimensions.height * 4 * 4;
+      const outputBuffer = bufferManager.createBuffer(
+        {
+          size: outputSize,
+          usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC | GPUBufferUsage.COPY_DST,
+          label: 'output-hires',
+        },
+        false
+      );
+
+      // Compile shader
+      const compilationResult = await compiler.compile(shader.source, shader.cacheKey);
+      if (!compilationResult.success || !compilationResult.module) {
+        throw new Error(`Compilation failed: ${ShaderCompiler.formatErrors(compilationResult.errors)}`);
+      }
+
+      // Create dimensions buffer
+      const dimensionsData = new Uint32Array([superDimensions.width, superDimensions.height, 0, 0]);
+      const dimensionsBuffer = bufferManager.createBufferWithData(
+        dimensionsData as BufferSource,
+        GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+        'dimensions-hires'
+      );
+      addLog(`Dimensions: ${dimensionsData[0]} x ${dimensionsData[1]}`);
+
+      // Create parameter buffer if shader has parameters
+      let paramBuffer: GPUBuffer | undefined;
+      if (shader.parameters.length > 0) {
+        const paramValues = shaderStore.getParameterValues(shaderId);
+        paramBuffer = parameterManager.createParameterBuffer(shader.parameters, paramValues);
+        addLog(`Parameters: ${shader.parameters.length} params`);
+      } else {
+        addLog(`No parameters for this shader`);
+      }
+
+      // Get iteration value
+      const iterations = shaderStore.getIterationValue(shaderId) ?? shader.iterations ?? 1;
+      const hasIterations = iterations > 1;
+      const hasParams = shader.parameters.length > 0;
+
+      // Create bind group layout and pipeline (reuse same cache key as preview)
+      const layout = pipelineBuilder.createStandardLayout(hasParams, hasIterations, shader.cacheKey);
+      const pipeline = pipelineBuilder.createPipeline({
+        shader: compilationResult.module,
+        entryPoint: 'main',
+        bindGroupLayouts: [layout],
+        label: shader.cacheKey,
+      });
+
+      const workgroups = executor.calculateWorkgroups(superDimensions.width, superDimensions.height);
+
+      addLog(`Workgroups: ${workgroups.x}x${workgroups.y} (limit: ${limits.maxComputeWorkgroupsPerDimension})`);
+      addLog(`Executing shader: ${superDimensions.width}x${superDimensions.height}, workgroups: ${workgroups.x}x${workgroups.y}, iterations: ${iterations}`);
+
+      // Execute shader (with iterations if needed)
+      if (hasIterations) {
+        const device = context.getDevice();
+        const textureA = device.createTexture({
+          size: [superDimensions.width, superDimensions.height],
+          format: 'rgba32float',
+          usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST,
+          label: 'feedback-texture-A-hires',
+        });
+        const textureB = device.createTexture({
+          size: [superDimensions.width, superDimensions.height],
+          format: 'rgba32float',
+          usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST,
+          label: 'feedback-texture-B-hires',
+        });
+
+        const zeroData = new Float32Array(superDimensions.width * superDimensions.height * 4);
+        device.queue.writeTexture(
+          { texture: textureB },
+          zeroData,
+          { bytesPerRow: superDimensions.width * 16 },
+          [superDimensions.width, superDimensions.height]
+        );
+
+        const prevSampler = device.createSampler({
+          addressModeU: 'mirror-repeat',
+          addressModeV: 'mirror-repeat',
+          magFilter: 'nearest',
+          minFilter: 'nearest',
+        });
+
+        for (let iter = 0; iter < iterations; iter++) {
+          const isLastIter = iter === iterations - 1;
+          const currentTexture = iter % 2 === 0 ? textureA : textureB;
+          const prevTexture = iter % 2 === 0 ? textureB : textureA;
+
+          const bindGroup = pipelineBuilder.createStandardBindGroup(
+            layout,
+            coordTexture,
+            coordSampler,
+            outputBuffer,
+            dimensionsBuffer,
+            paramBuffer,
+            prevTexture,
+            prevSampler
+          );
+
+          const executionContext = createExecutionContext(pipeline, bindGroup, workgroups, outputBuffer);
+          await executor.execute(executionContext);
+
+          if (!isLastIter) {
+            const commandEncoder = device.createCommandEncoder();
+            commandEncoder.copyBufferToTexture(
+              { buffer: outputBuffer, bytesPerRow: superDimensions.width * 16 },
+              { texture: currentTexture },
+              [superDimensions.width, superDimensions.height]
+            );
+            device.queue.submit([commandEncoder.finish()]);
+            await device.queue.onSubmittedWorkDone();
+          }
+        }
+
+        textureA.destroy();
+        textureB.destroy();
+      } else {
+        const bindGroup = pipelineBuilder.createStandardBindGroup(
+          layout,
+          coordTexture,
+          coordSampler,
+          outputBuffer,
+          dimensionsBuffer,
+          paramBuffer
+        );
+
+        const executionContext = createExecutionContext(pipeline, bindGroup, workgroups, outputBuffer);
+        await executor.execute(executionContext);
+      }
+
+      // CRITICAL: Wait for shader execution to complete
+      await context.getDevice().queue.onSubmittedWorkDone();
+
+      // Debug: Read one pixel from outputBuffer immediately after shader
+      try {
+        const testOut = await bufferManager.readFromBuffer(outputBuffer, 0, 16);
+        const testOutFloats = new Float32Array(testOut);
+        addLog(`Raw shader output - first pixel: R=${testOutFloats[0].toFixed(3)} G=${testOutFloats[1].toFixed(3)} B=${testOutFloats[2].toFixed(3)} A=${testOutFloats[3].toFixed(3)}`);
+      } catch (e) {
+        addLog(`Failed to read raw output: ${e}`, 'error');
+      }
+
+      // Apply gamma/contrast post-processing
+      const processedBuffer = await postProcessor.applyGammaContrast(
+        outputBuffer,
+        superDimensions,
+        globalParams.gamma,
+        globalParams.contrast
+      );
+
+      // Downsample to final resolution
+      const downsampledBuffer = resultRenderer.downsample(
+        processedBuffer,
+        superDimensions,
+        hiResDimensions,
+        supersampleFactor
+      );
+
+      // Wait for all GPU work to complete before downloading
+      addLog(`Waiting for GPU operations to complete...`);
+      await context.getDevice().queue.onSubmittedWorkDone();
+
+      // Debug: Check first pixel only (read just 16 bytes)
+      const testData = await bufferManager.readFromBuffer(downsampledBuffer, 0, 16);
+      const testFloats = new Float32Array(testData);
+      addLog(`First pixel: R=${testFloats[0].toFixed(3)} G=${testFloats[1].toFixed(3)} B=${testFloats[2].toFixed(3)} A=${testFloats[3].toFixed(3)}`);
+
+      // Download as PNG
+      const filename = `${shader.name.replace(/[^a-z0-9]/gi, '_').toLowerCase()}_${hiResDimensions.width}x${hiResDimensions.height}.png`;
+      await resultRenderer.downloadImage(downsampledBuffer, hiResDimensions, filename, 'image/png');
+
+      addLog(`Downloaded "${filename}"`, 'success');
+    } catch (err) {
+      const errorMessage = err instanceof Error ? err.message : 'Unknown error';
+      addLog(`Download failed: ${errorMessage}`, 'error');
+      console.error('Download error:', err);
+    }
+  };
+
   const handleMashup = async () => {
     if (!shaderEvolver) {
       alert('Mashup feature requires VITE_ANTHROPIC_API_KEY environment variable');
@@ -625,6 +879,8 @@ export const App: Component = () => {
             onCancelEvolution={handleCancelEvolution}
             onPromoteChild={handlePromoteChild}
             onMashupToggle={handleMashupToggle}
+            onDeleteShader={handleDeleteShader}
+            onDownloadShader={handleDownloadShader}
           />
 
           <Show when={evolutionStore.getMashupResults().length > 0}>

@@ -18,6 +18,8 @@ interface ShaderGridProps {
   onCancelEvolution: (shaderId: string) => void;
   onPromoteChild: (child: ShaderDefinition) => void;
   onMashupToggle: (shaderId: string) => void;
+  onDeleteShader: (shaderId: string) => void;
+  onDownloadShader: (shaderId: string) => void;
 }
 
 export const ShaderGrid: Component<ShaderGridProps> = (props) => {
@@ -41,6 +43,8 @@ export const ShaderGrid: Component<ShaderGridProps> = (props) => {
             onCancelEvolution={props.onCancelEvolution}
             onPromoteChild={props.onPromoteChild}
             onMashupToggle={props.onMashupToggle}
+            onDeleteShader={() => props.onDeleteShader(shader.id)}
+            onDownloadShader={() => props.onDownloadShader(shader.id)}
           />
         )}
       </For>

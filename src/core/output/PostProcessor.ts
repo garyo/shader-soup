@@ -18,17 +18,17 @@ export class PostProcessor {
   }
 
   /**
-   * Apply brightness and contrast adjustments to a buffer
-   * @param inputBuffer - Input buffer with vec4<f32> colors
+   * Apply gamma and contrast adjustments to a buffer (in linear RGB space)
+   * @param inputBuffer - Input buffer with vec4<f32> colors (linear RGB)
    * @param dimensions - Buffer dimensions
-   * @param brightness - Brightness adjustment (-1 to 1)
-   * @param contrast - Contrast adjustment (-1 to 1)
-   * @returns Output buffer with adjustments applied
+   * @param gamma - Gamma adjustment (0.1 to 10, default 1)
+   * @param contrast - Contrast adjustment (-1 to 1, default 0)
+   * @returns Output buffer with adjustments applied (still in linear RGB)
    */
-  public async applyBrightnessContrast(
+  public async applyGammaContrast(
     inputBuffer: GPUBuffer,
     dimensions: Dimensions,
-    brightness: number,
+    gamma: number,
     contrast: number
   ): Promise<GPUBuffer> {
     const device = this.context.getDevice();
@@ -51,7 +51,7 @@ export class PostProcessor {
       this.createPipeline();
     }
 
-    // Create uniforms buffer with proper types (u32 for width/height, f32 for brightness/contrast)
+    // Create uniforms buffer with proper types (u32 for width/height, f32 for gamma/contrast)
     const uniformsBuffer = device.createBuffer({
       label: 'post-process-uniforms',
       size: 16, // 2 u32 + 2 f32 = 16 bytes
@@ -62,8 +62,8 @@ export class PostProcessor {
     const dimensionsData = new Uint32Array([width, height]);
     device.queue.writeBuffer(uniformsBuffer, 0, dimensionsData);
 
-    // Write f32 values for brightness and contrast
-    const adjustmentsData = new Float32Array([brightness, contrast]);
+    // Write f32 values for gamma and contrast
+    const adjustmentsData = new Float32Array([gamma, contrast]);
     device.queue.writeBuffer(uniformsBuffer, 8, adjustmentsData); // offset by 8 bytes (2 u32s)
 
     // Create bind group
@@ -102,7 +102,7 @@ export class PostProcessor {
       struct Uniforms {
         width: u32,
         height: u32,
-        brightness: f32,
+        gamma: f32,
         contrast: f32,
       }
 
@@ -119,17 +119,19 @@ export class PostProcessor {
         let index = id.y * uniforms.width + id.x;
         var color = input[index];
 
-        // Apply brightness: shift all RGB values
-        if (abs(uniforms.brightness) > 0.001) {
+        // Apply gamma correction (in linear RGB space)
+        // gamma > 1 brightens midtones, gamma < 1 darkens midtones
+        if (abs(uniforms.gamma - 1.0) > 0.001) {
+          let invGamma = 1.0 / uniforms.gamma;
           color = vec4<f32>(
-            color.r + uniforms.brightness,
-            color.g + uniforms.brightness,
-            color.b + uniforms.brightness,
+            pow(max(color.r, 0.0), invGamma),
+            pow(max(color.g, 0.0), invGamma),
+            pow(max(color.b, 0.0), invGamma),
             color.a
           );
         }
 
-        // Apply contrast: scale around midpoint (0.5)
+        // Apply contrast: scale around midpoint (0.5 in linear space)
         if (abs(uniforms.contrast) > 0.001) {
           let contrastFactor = 1.0 + uniforms.contrast;
           color = vec4<f32>(

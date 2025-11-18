@@ -206,13 +206,13 @@ export class CoordinateGenerator {
    * @param panY - Pan offset in Y direction (default 0)
    * @returns GPU texture with rgba16float format containing (x, y) coords
    */
-  public createCoordinateTexture(
+  public async createCoordinateTexture(
     dimensions: Dimensions,
     context: WebGPUContext,
     zoom: number = 1.0,
     panX: number = 0.0,
     panY: number = 0.0
-  ): GPUTexture {
+  ): Promise<GPUTexture> {
     const device = context.getDevice();
     const { width, height } = dimensions;
 
@@ -266,8 +266,19 @@ export class CoordinateGenerator {
       code: shaderCode,
     });
 
-    // Create storage buffer for f16 coordinates
+    // Check if we can use storage buffer or need to use texture directly
     const coordBufferSize = width * height * 4 * 2; // vec4<f16> = 8 bytes
+    console.log(`[CoordGen] Creating coord buffer: ${width}x${height}, size: ${coordBufferSize} bytes (${(coordBufferSize / 1024 / 1024).toFixed(2)} MB)`);
+
+    const maxStorageSize = device.limits.maxStorageBufferBindingSize;
+    console.log(`[CoordGen] Max storage buffer binding size: ${(maxStorageSize / 1024 / 1024).toFixed(2)} MB`);
+
+    if (coordBufferSize > maxStorageSize) {
+      console.log(`[CoordGen] Buffer size exceeds limit, using CPU-side generation`);
+      // Fall back to CPU generation for very large textures
+      return this.createCoordinateTextureCPU(dimensions, context, zoom, panX, panY);
+    }
+
     const coordBuffer = device.createBuffer({
       label: 'coord-buffer-f16',
       size: coordBufferSize,
@@ -324,6 +335,7 @@ export class CoordinateGenerator {
     passEncoder.setBindGroup(0, bindGroup);
     const workgroupsX = Math.ceil(width / 8);
     const workgroupsY = Math.ceil(height / 8);
+    console.log(`[CoordGen] Dispatching workgroups: ${workgroupsX}x${workgroupsY}`);
     passEncoder.dispatchWorkgroups(workgroupsX, workgroupsY);
     passEncoder.end();
 
@@ -332,11 +344,12 @@ export class CoordinateGenerator {
       label: 'coordinate-texture',
       size: { width, height },
       format: 'rgba16float',
-      usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST,
+      usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST | GPUTextureUsage.COPY_SRC,
     });
 
     // Copy f16 buffer to texture (f16 → f16, no conversion)
     const bytesPerRow = Math.ceil((width * 8) / 256) * 256;
+    console.log(`[CoordGen] Buffer-to-texture copy: ${width}x${height}, bytesPerRow: ${bytesPerRow}`);
     commandEncoder.copyBufferToTexture(
       { buffer: coordBuffer, bytesPerRow },
       { texture },
@@ -344,6 +357,93 @@ export class CoordinateGenerator {
     );
 
     device.queue.submit([commandEncoder.finish()]);
+
+    // IMPORTANT: Wait for GPU to finish generating coordinates before returning
+    await device.queue.onSubmittedWorkDone();
+
+    return texture;
+  }
+
+  /**
+   * Create coordinate texture using CPU-side generation (fallback for large textures)
+   * @param dimensions - Texture dimensions
+   * @param context - WebGPU context
+   * @param zoom - Zoom factor
+   * @param panX - Pan offset in X
+   * @param panY - Pan offset in Y
+   * @returns GPU texture with rgba16float format
+   */
+  private async createCoordinateTextureCPU(
+    dimensions: Dimensions,
+    context: WebGPUContext,
+    zoom: number = 1.0,
+    panX: number = 0.0,
+    panY: number = 0.0
+  ): Promise<GPUTexture> {
+    const device = context.getDevice();
+    const { width, height } = dimensions;
+
+    console.log(`[CoordGen CPU] Generating ${width}x${height} coordinates on CPU`);
+
+    // Create Float32Array for coordinates (we'll convert to f16 via writeTexture)
+    const coords = new Float32Array(width * height * 4);
+    const aspectRatio = width / height;
+
+    for (let y = 0; y < height; y++) {
+      for (let x = 0; x < width; x++) {
+        const index = (y * width + x) * 4;
+
+        // Normalize X to -1 to 1
+        const normalizedX = (x / (width - 1)) * 2 - 1;
+
+        // Normalize Y to maintain aspect ratio, centered at 0
+        const normalizedY = ((y / (height - 1)) * 2 - 1) / aspectRatio;
+
+        // Apply zoom and pan
+        const transformedX = normalizedX / zoom - panX;
+        const transformedY = normalizedY / zoom + panY;
+
+        coords[index] = transformedX;
+        coords[index + 1] = transformedY;
+        coords[index + 2] = 0.0;
+        coords[index + 3] = 1.0;
+      }
+    }
+
+    // Create texture
+    const texture = device.createTexture({
+      label: 'coordinate-texture-cpu',
+      size: { width, height },
+      format: 'rgba16float',
+      usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST | GPUTextureUsage.COPY_SRC,
+    });
+
+    // Write data to texture in chunks to avoid maxBufferSize limit
+    // bytesPerRow for Float32Array: width * 4 channels * 4 bytes = width * 16
+    const bytesPerRow = Math.ceil((width * 16) / 256) * 256;
+    const maxChunkSize = 64 * 1024 * 1024; // 64MB chunks to stay well under limits
+    const rowsPerChunk = Math.floor(maxChunkSize / bytesPerRow);
+
+    console.log(`[CoordGen CPU] Writing texture in chunks: bytesPerRow=${bytesPerRow}, rowsPerChunk=${rowsPerChunk}`);
+
+    for (let startRow = 0; startRow < height; startRow += rowsPerChunk) {
+      const rowsThisChunk = Math.min(rowsPerChunk, height - startRow);
+      const offsetInFloats = startRow * width * 4;
+      const sizeInFloats = rowsThisChunk * width * 4;
+      const chunkData = coords.subarray(offsetInFloats, offsetInFloats + sizeInFloats);
+
+      device.queue.writeTexture(
+        { texture, origin: { x: 0, y: startRow, z: 0 } },
+        chunkData,
+        { bytesPerRow },
+        { width, height: rowsThisChunk, depthOrArrayLayers: 1 }
+      );
+
+      console.log(`[CoordGen CPU] Wrote rows ${startRow} to ${startRow + rowsThisChunk - 1}`);
+    }
+
+    await device.queue.onSubmittedWorkDone();
+    console.log(`[CoordGen CPU] Coordinates generated successfully`);
 
     return texture;
   }

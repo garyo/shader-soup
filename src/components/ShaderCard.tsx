@@ -27,6 +27,8 @@ interface ShaderCardProps {
   onCancelEvolution: (shaderId: string) => void;
   onPromoteChild: (child: ShaderDefinition) => void;
   onMashupToggle: (shaderId: string) => void;
+  onDeleteShader: () => void;
+  onDownloadShader: () => void;
 }
 
 export const ShaderCard: Component<ShaderCardProps> = (props) => {
@@ -67,6 +69,21 @@ export const ShaderCard: Component<ShaderCardProps> = (props) => {
           {props.result && (
             <span class="execution-time">{props.result.executionTime.toFixed(2)}ms</span>
           )}
+          <button
+            class="download-shader-button"
+            onClick={props.onDownloadShader}
+            title="Download 2048x2048 PNG"
+          >
+            💾
+          </button>
+          <button
+            class="delete-shader-button"
+            onClick={props.onDeleteShader}
+            disabled={!shaderStore.isPromoted(props.shader.id)}
+            title={shaderStore.isPromoted(props.shader.id) ? "Delete shader" : "Built-in shader (cannot delete)"}
+          >
+            🗑️
+          </button>
         </div>
       </div>
 
