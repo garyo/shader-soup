@@ -10,12 +10,14 @@ import {
   createBatchMutationPrompt,
   createDebugPrompt,
   createParameterNamingPrompt,
+  createMashupPrompt,
   shaderObjectTool,
   debugShaderTool,
   parameterNamesTool,
   type BatchMutationPromptParams,
   type DebugPromptParams,
   type ParameterNamingPromptParams,
+  type MashupPromptParams,
 } from './prompts';
 
 export interface EvolutionOptions {
@@ -76,7 +78,7 @@ export class ShaderEvolver {
       console.log(`Generating ${count} children in ${numBatches} parallel batches of ${this.batchSize}`);
 
       // Create array of batch promises
-      const batchPromises: Promise<string[]>[] = [];
+      const batchPromises: Promise<Array<{ shader: string; changelog?: string }>>[] = [];
       for (let batchIndex = 0; batchIndex < numBatches; batchIndex++) {
         const isLastBatch = batchIndex === numBatches - 1;
         const batchCount = isLastBatch ? count - (batchIndex * this.batchSize) : this.batchSize;
@@ -87,14 +89,16 @@ export class ShaderEvolver {
       const batchResults = await Promise.all(batchPromises);
 
       // Flatten results from all batches
-      const mutatedShaders = batchResults.flat();
+      const mutatedShaders: Array<{ shader: string; changelog?: string }> = batchResults.flat();
 
       const results: EvolutionResult[] = [];
 
       // Process each mutated shader
       for (let i = 0; i < mutatedShaders.length; i++) {
         try {
-          const mutatedSource = mutatedShaders[i];
+          const mutatedShader = mutatedShaders[i];
+          const mutatedSource = mutatedShader.shader;
+          const changelog = mutatedShader.changelog;
 
           // Debug until it compiles
           const debugResult = await this.debugShader(mutatedSource);
@@ -108,8 +112,9 @@ export class ShaderEvolver {
             continue;
           }
 
-          // Parse parameters
+          // Parse parameters and iterations
           const parameters = this.parameterManager.parseParameters(debugResult.source);
+          const iterations = this.parameterManager.parseIterations(debugResult.source);
           let namedParameters = parameters;
           const doParamRename = false;
           if (doParamRename) {
@@ -126,7 +131,9 @@ export class ShaderEvolver {
             cacheKey: `${parentShader.cacheKey}-${childNumber}-${uniqueSuffix}`, // Unique cache key
             source: debugResult.source,
             parameters: namedParameters,
+            iterations: iterations,
             description: `Evolved from "${parentShader.name}"`,
+            changelog: changelog,
             createdAt: new Date(),
             modifiedAt: new Date(),
           };
@@ -156,9 +163,182 @@ export class ShaderEvolver {
 
 
   /**
+   * Evolve mashup shaders - combine multiple shaders into new variations
+   */
+  public async evolveMashup(
+    parentShaders: ShaderDefinition[],
+    count: number = 6,
+    temperature?: number
+  ): Promise<EvolutionResult[]> {
+    if (parentShaders.length < 2) {
+      throw new Error('Mashup requires at least 2 parent shaders');
+    }
+
+    // Use provided temperature or fall back to instance temperature
+    const effectiveTemp = temperature ?? this.temperature;
+
+    try {
+      console.log(`Generating ${count} mashup variations from ${parentShaders.length} parents`);
+
+      // Create mashup prompt
+      const promptParams: MashupPromptParams = {
+        shaders: parentShaders.map(shader => ({
+          name: shader.name,
+          source: shader.source,
+        })),
+        count,
+        temperature: effectiveTemp,
+      };
+
+      // Generate mashup shaders
+      const mashupShaders = await this.batchMashupShader(promptParams);
+
+      const results: EvolutionResult[] = [];
+
+      // Process each mashup shader
+      for (let i = 0; i < mashupShaders.length; i++) {
+        try {
+          const mashupData = mashupShaders[i];
+          const mashupSource = mashupData.shader;
+          const changelog = mashupData.changelog;
+          const llmName = mashupData.name;
+
+          // Debug until it compiles
+          const debugResult = await this.debugShader(mashupSource);
+
+          if (!debugResult.success) {
+            results.push({
+              success: false,
+              error: `Failed to compile after ${this.maxDebugAttempts} attempts`,
+              debugAttempts: this.maxDebugAttempts,
+            });
+            continue;
+          }
+
+          // Parse parameters and iterations
+          const parameters = this.parameterManager.parseParameters(debugResult.source);
+          const iterations = this.parameterManager.parseIterations(debugResult.source);
+          let namedParameters = parameters;
+          const doParamRename = false;
+          if (doParamRename) {
+            // Update parameter names
+            namedParameters = await this.updateParameterNames(debugResult.source, parameters);
+          }
+
+          // Create mashup shader with LLM-provided name or fallback
+          const childNumber = i + 1;
+          const uniqueSuffix = crypto.randomUUID().slice(0, 8);
+          const parentNames = parentShaders.map(s => s.name).join(' + ');
+          const mashupName = llmName || `Mashup ${childNumber}: ${parentNames}`;
+
+          const mashupShaderDef: ShaderDefinition = {
+            id: crypto.randomUUID(),
+            name: mashupName,
+            cacheKey: `mashup-${uniqueSuffix}`, // Unique cache key
+            source: debugResult.source,
+            parameters: namedParameters,
+            iterations: iterations,
+            description: `Mashup of: ${parentNames}`,
+            changelog: changelog,
+            createdAt: new Date(),
+            modifiedAt: new Date(),
+          };
+
+          results.push({
+            success: true,
+            shader: mashupShaderDef,
+          });
+        } catch (error) {
+          results.push({
+            success: false,
+            error: error instanceof Error ? error.message : 'Unknown error during mashup',
+          });
+        }
+      }
+
+      return results;
+    } catch (error) {
+      // If mashup fails entirely, return empty results
+      console.error('Mashup evolution failed:', error);
+      return Array(count).fill({
+        success: false,
+        error: error instanceof Error ? error.message : 'Mashup evolution failed',
+      });
+    }
+  }
+
+  /**
+   * Batch mashup shader - generate multiple mashup variations at once
+   */
+  private async batchMashupShader(
+    promptParams: MashupPromptParams
+  ): Promise<Array<{ name?: string; shader: string; changelog?: string }>> {
+    const prompt = createMashupPrompt(promptParams);
+    console.log(`Batch mashup with ${this.model}, params ${JSON.stringify({ count: promptParams.count, temperature: promptParams.temperature })}`);
+
+    // Create messages array for conversation
+    const messages: Anthropic.MessageParam[] = [
+      {
+        role: 'user',
+        content: prompt,
+      },
+    ];
+
+    // Loop to handle tool calls
+    while (true) {
+      const startTime = performance.now();
+      const message = await this.anthropic.messages.create({
+        model: this.model,
+        max_tokens: 16384, // Increased for multiple shaders
+        temperature: promptParams.temperature,
+        tools: [shaderObjectTool],
+        tool_choice: { type: "tool", name: "shader_output" },
+        messages,
+      });
+      const elapsed = performance.now() - startTime;
+
+      // Log timing and token usage
+      console.log(`[LLM] Batch mashup call:`, {
+        model: this.model,
+        temperature: promptParams.temperature,
+        count: promptParams.count,
+        parent_count: promptParams.shaders.length,
+        elapsed_ms: elapsed.toFixed(0),
+        input_tokens: message.usage.input_tokens,
+        output_tokens: message.usage.output_tokens,
+        total_tokens: message.usage.input_tokens + message.usage.output_tokens,
+        stop_reason: message.stop_reason,
+      });
+
+      // Check if the model used the tool
+      if (message.stop_reason === 'tool_use') {
+        // Find the shader_output tool use
+        const toolUse = message.content.find(
+          (block): block is Anthropic.ToolUseBlock =>
+            block.type === 'tool_use' && block.name === 'shader_output'
+        );
+
+        if (toolUse) {
+          console.log(`Success: extracting mashup shaders`);
+          const input = toolUse.input as { shaders: Array<{ name?: string; shader: string, changelog?: string }> };
+          console.log(`Mashup shaders: ${input.shaders.length} generated`);
+          return input.shaders;
+        }
+      }
+
+      // If we get here without finding the tool use, something went wrong
+      throw new Error(`Unexpected stop reason: ${message.stop_reason}`);
+    }
+  }
+
+  /**
    * Batch mutate shader - generate multiple variations at once
    */
-  private async batchMutateShader(shaderSource: string, count: number, temperature: number): Promise<string[]> {
+  private async batchMutateShader(
+    shaderSource: string,
+    count: number,
+    temperature: number
+  ): Promise<Array<{ shader: string; changelog?: string }>> {
     const promptParams: BatchMutationPromptParams = {
       shaderSource,
       count,
@@ -216,7 +396,7 @@ export class ShaderEvolver {
           console.log(`Success: extracting shaders`);
           const input = toolUse.input as { shaders: Array<{ shader: string, changelog?: string }> };
           console.log(`Shaders: ${JSON.stringify(input.shaders, null, 2)}`)
-          return input.shaders.map(s => s.shader);
+          return input.shaders;
         }
       }
 

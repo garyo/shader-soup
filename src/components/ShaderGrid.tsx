@@ -6,13 +6,18 @@ import { type Component, For } from 'solid-js';
 import { ShaderCard } from './ShaderCard';
 import { resultStore } from '@/stores';
 import type { ShaderDefinition } from '@/types/core';
+import type { GlobalParameters } from '@/stores/shaderStore';
 
 interface ShaderGridProps {
   shaders: ShaderDefinition[];
   onParameterChange: (shaderId: string, paramName: string, value: number) => void;
+  onIterationChange: (shaderId: string, value: number) => void;
+  onGlobalParameterChange: (shaderId: string, paramName: keyof GlobalParameters, value: number) => void;
+  onGlobalParametersReset: (shaderId: string) => void;
   onEvolve: (shaderId: string) => void;
   onCancelEvolution: (shaderId: string) => void;
   onPromoteChild: (child: ShaderDefinition) => void;
+  onMashupToggle: (shaderId: string) => void;
 }
 
 export const ShaderGrid: Component<ShaderGridProps> = (props) => {
@@ -27,9 +32,15 @@ export const ShaderGrid: Component<ShaderGridProps> = (props) => {
             onParameterChange={(paramName, value) =>
               props.onParameterChange(shader.id, paramName, value)
             }
+            onIterationChange={(value) => props.onIterationChange(shader.id, value)}
+            onGlobalParameterChange={(paramName, value) =>
+              props.onGlobalParameterChange(shader.id, paramName, value)
+            }
+            onGlobalParametersReset={() => props.onGlobalParametersReset(shader.id)}
             onEvolve={props.onEvolve}
             onCancelEvolution={props.onCancelEvolution}
             onPromoteChild={props.onPromoteChild}
+            onMashupToggle={props.onMashupToggle}
           />
         )}
       </For>

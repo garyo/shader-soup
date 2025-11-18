@@ -40,6 +40,8 @@ export interface ShaderDefinition {
   source: string;
   parameters: ShaderParameter[];
   description?: string;
+  changelog?: string; // Summary of changes in evolved versions
+  iterations?: number; // Number of feedback iterations (default: 1)
   createdAt: Date;
   modifiedAt: Date;
 }

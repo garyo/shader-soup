@@ -196,13 +196,13 @@ export class PipelineBuilder {
       });
     }
 
-    // Binding 5-6: Input texture and sampler (optional, for image processing)
+    // Binding 5-6: Input texture and sampler (optional, for image processing or feedback)
     if (hasInputTexture) {
       entries.push({
         binding: 5,
         visibility: GPUShaderStage.COMPUTE,
         texture: {
-          sampleType: 'float',
+          sampleType: 'unfilterable-float', // Use unfilterable for rgba32float feedback textures
           viewDimension: '2d',
         },
       });
@@ -211,7 +211,7 @@ export class PipelineBuilder {
         binding: 6,
         visibility: GPUShaderStage.COMPUTE,
         sampler: {
-          type: 'filtering',
+          type: 'non-filtering', // Non-filtering sampler for rgba32float
         },
       });
     }

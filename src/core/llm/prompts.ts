@@ -28,6 +28,92 @@ export interface ParameterNamingPromptParams {
   currentParams: Array<{ name: string; min: number; max: number; default: number; step: number }>;
 }
 
+export interface MashupPromptParams {
+  shaders: Array<{ name: string; source: string }>;
+  count: number;
+  temperature: number;
+}
+
+/**
+ * Mashup prompt - asks Claude to combine multiple shaders into new variations
+ */
+export function createMashupPrompt(params: MashupPromptParams): string {
+  const shaderList = params.shaders
+    .map((shader, index) => `SHADER ${index + 1}: "${shader.name}"\n\`\`\`wgsl\n${shader.source}\n\`\`\``)
+    .join('\n\n');
+
+  return `You are a highly creative WebGPU shader developer. Your task is to create ${params.count} new shaders by creatively, randomly combining and mashing up techniques from these ${params.shaders.length} shaders:
+
+${shaderList}
+
+AVAILABLE NOISE LIBRARY:
+All shaders have access to a comprehensive noise library that is automatically included. You can use any of these functions:
+
+Hash Functions:
+- pcg(n: u32) -> u32
+- xxhash32(n: u32) -> u32
+- hash21(p: vec2f) -> f32 - Hash 2D position to float [0,1]
+- hash22(p: vec2f) -> vec2f - Hash 2D position to vec2 [0,1]
+
+Noise Functions:
+- valueNoise2(p: vec2f) -> f32 - Simple value noise [0,1]
+- perlinNoise2(p: vec2f) -> f32 - Classic Perlin noise (returns ~-1 to 1)
+- cellularNoise(p: vec2f) -> f32 - Voronoi-like cellular noise
+
+Fractal/Layered Noise (FBM - Fractional Brownian Motion):
+- fbmPerlin(p: vec2f) -> f32 - 4-octave Perlin FBM
+- fbmValue(p: vec2f) -> f32 - 4-octave value FBM
+- fbmPerlinCustom(p: vec2f, octaves: i32, lacunarity: f32, gain: f32) -> f32 - Customizable FBM
+
+Special Patterns:
+- turbulence(p: vec2f, octaves: i32) -> f32 - Absolute value noise for turbulent patterns
+- ridgeNoise(p: vec2f, octaves: i32) -> f32 - Inverted ridges for mountain-like patterns
+- domainWarp(p: vec2f, amount: f32) -> vec2f - Distort coordinate space with noise
+
+MASHUP GUIDELINES:
+- Generate EXACTLY ${params.count} mashup variations
+- Use a temperature of ${params.temperature} (0 = conservative, 1 = very creative)
+- Each mashup should COMBINE techniques from the parent shaders in interesting ways, and add or change elements
+- Think about how to blend visual elements: layering, modulation, conditional mixing, spatial transitions
+- Think about how to blend mathematical techniques even when you can't predict the visual outcomes
+- Examples of mashup techniques:
+  * Use the pattern generation from one shader but color scheme from another
+  * Layer outputs: multiply, add, or mix colors from different techniques
+  * Use one shader's pattern to modulate parameters of another shader's pattern
+  * Apply one shader's coordinate transformation before another shader's logic
+  * Use conditional logic to blend regions: if (coord.x < 0.5) use technique A else technique B
+  * Domain warp one shader's coordinates using noise from another
+  * Combine color palettes: alternate bands, radial transitions, noise-based selection
+- Each variation should be VISUALLY and MATHEMATICALLY DISTINCT
+- Be creative in how you combine the parent shaders - don't just linearly interpolate!
+
+TECHNICAL CONSTRAINTS:
+- You MUST preserve the structure in each mashup:
+  * Keep @compute @workgroup_size annotation
+  * Keep @group and @binding declarations with the REQUIRED binding layout:
+    - @binding(0): coordTexture: texture_2d<f32>
+    - @binding(1): coordSampler: sampler
+    - @binding(2): output: array<vec4<f32>>
+    - @binding(3): dimensions: Dimensions (uniform)
+    - @binding(4): params: Params (uniform, optional)
+  * Calculate texCoord and sample coordinates like:
+    let texCoord = vec2<f32>(f32(id.x) / f32(dimensions.width), f32(id.y) / f32(dimensions.height));
+    let coord = textureSampleLevel(coordTexture, coordSampler, texCoord, 0.0).rg;
+  * Keep the main function signature
+  * You may add, remove, or modify @param comments, keeping the same format
+- Each shader must compile and produce visual output
+- Each mashup should be SYNTACTICALLY CORRECT to your best approximation (a debugger will run after this)
+
+OUTPUT FORMAT:
+Use the shader_output tool to return your ${params.count} mashup variations.
+The tool expects a JSON object with a "shaders" array, each containing:
+- "name" (required): A creative, concise title (2-4 words) that captures the essence of this mashup (e.g., "Chromatic Spiral Drift", "Cellular Wave Morph", "Turbulent Color Dance")
+- "shader" (required): The complete WGSL code
+- "changelog" (optional): Brief notes on how the parent shaders were combined
+
+Be creative with the names - use evocative, descriptive titles that hint at the visual or mathematical nature of the mashup!`;
+}
+
 /**
  * Mutation prompt - asks Claude to creatively modify a shader
  */
@@ -145,6 +231,7 @@ CRITICAL REQUIREMENTS:
 - Use a temperature of ${params.temperature}: 0 means no change at all (return the original), 1.0 means make many changes
 - Each variation should be VISUALLY DISTINCT from all others; start each one with a different random seed.
 - Each variation should be SYNTACTICALLY CORRECT to your best approximation (a debugger will run after this)
+- With trig functions, try to keep spatial continuity by mostly preferring full rotations or angle params that end up where they start
 - Things you can change:
   - Vary constant values (higher temp = wider variation)
   - Vary param values and ranges (higher temp = wider variation)
@@ -153,7 +240,11 @@ CRITICAL REQUIREMENTS:
   - Add noise functions: Use perlinNoise2, fbmPerlin, cellularNoise, turbulence, domainWarp, etc.
   - Vary code structure: swap statement orders, add or delete statements or loops or conditionals
   - Write new functions and use them
-- With a temp of 0.1, change 1 or 2 of each of those. With a temp of 0.5, change around 5 of each of those. With a temp of 1.0, change most of them so the result is very different from the original.
+  - Think about new math operations (abs, mod)
+  - Think about symmetry vs. asymmetry
+  - Add params for interesting constants, and after evolving, delete any params that don't do anything interesting.
+- With a temp of 0.1, change 1 or 2 of each of those. With a temp of 0.5, change around 5 of each of those. With a temp of 1.0, change most of them so the result is VERY different from the original.
+- BE CREATIVE!
 
 TECHNICAL CONSTRAINTS:
 - You MUST preserve the structure in each variation:
@@ -188,6 +279,10 @@ export const shaderObjectTool: Anthropic.Tool = {
         "items": {
           "type": "object",
           "properties": {
+            "name": {
+              "type": "string",
+              "description": "Creative name for the shader (2-4 words)",
+            },
             "shader": {
               "type": "string",
               "description": "The shader code",

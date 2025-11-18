@@ -2,9 +2,11 @@
  * Main App Component - Integrates WebGPU engine with UI
  */
 
-import { type Component, onMount, createSignal, createEffect, Show } from 'solid-js';
+import { type Component, onMount, createSignal, Show } from 'solid-js';
 import { ShaderGrid } from './ShaderGrid';
 import { Toolbar } from './Toolbar';
+import { MashupToolbar } from './MashupToolbar';
+import { MashupResults } from './MashupResults';
 import { LogOverlay, type LogEntry } from './LogOverlay';
 import WebGPUCheck from './WebGPUCheck';
 import { shaderStore, inputStore, resultStore, evolutionStore } from '@/stores';
@@ -16,6 +18,7 @@ import { PipelineBuilder } from '@/core/engine/PipelineBuilder';
 import { Executor, createExecutionContext } from '@/core/engine/Executor';
 import { CoordinateGenerator } from '@/core/input/CoordinateGenerator';
 import { ResultRenderer } from '@/core/output/ResultRenderer';
+import { PostProcessor } from '@/core/output/PostProcessor';
 import { ShaderEvolver } from '@/core/llm';
 import type { ShaderDefinition } from '@/types/core';
 
@@ -24,6 +27,8 @@ import sineWaveSource from '../shaders/examples/sine-wave.wgsl?raw';
 import colorMixerSource from '../shaders/examples/color-mixer.wgsl?raw';
 import checkerboardSource from '../shaders/examples/checkerboard.wgsl?raw';
 import radialGradientSource from '../shaders/examples/radial-gradient.wgsl?raw';
+// Feedback disabled for now - complicates evolution and slows down rendering
+// import feedbackSource from '../shaders/examples/feedback.wgsl?raw';
 
 export const App: Component = () => {
   const [webgpuReady, setWebgpuReady] = createSignal(false);
@@ -52,6 +57,7 @@ export const App: Component = () => {
   let executor: Executor;
   let coordGenerator: CoordinateGenerator;
   let resultRenderer: ResultRenderer;
+  let postProcessor: PostProcessor;
   let shaderEvolver: ShaderEvolver;
 
   // Initialize WebGPU and load example shaders
@@ -68,6 +74,7 @@ export const App: Component = () => {
       executor = new Executor(context, true); // Enable profiling
       coordGenerator = new CoordinateGenerator();
       resultRenderer = new ResultRenderer(bufferManager, context);
+      postProcessor = new PostProcessor(context, bufferManager);
 
       // Initialize LLM-based shader evolver
       const apiKey = import.meta.env.VITE_ANTHROPIC_API_KEY;
@@ -118,16 +125,24 @@ export const App: Component = () => {
         source: radialGradientSource,
         description: 'HSV-based radial gradient',
       },
+      // Feedback disabled - complicates evolution, hard to get interesting results
+      // {
+      //   name: 'Feedback Loop',
+      //   source: feedbackSource,
+      //   description: 'Iterative diffusion with decay and injection (10 iterations)',
+      // },
     ];
 
     for (const example of examples) {
       const params = parameterManager.parseParameters(example.source);
+      const iterations = parameterManager.parseIterations(example.source);
       const shader: ShaderDefinition = {
         id: crypto.randomUUID(),
         name: example.name,
         cacheKey: example.name.toLowerCase().replace(/\s+/g, '-'), // e.g., "sine-wave"
         source: example.source,
         parameters: params,
+        iterations: iterations,
         description: example.description,
         createdAt: new Date(),
         modifiedAt: new Date(),
@@ -155,8 +170,17 @@ export const App: Component = () => {
         height: dimensions.height * supersampleFactor,
       };
 
-      // Create coordinate texture and sampler at supersampled resolution
-      const coordTexture = coordGenerator.createCoordinateTexture(superDimensions, context);
+      // Get global parameters for zoom/pan
+      const globalParams = shaderStore.getGlobalParameters(shaderId);
+
+      // Create coordinate texture and sampler at supersampled resolution with zoom/pan applied
+      const coordTexture = coordGenerator.createCoordinateTexture(
+        superDimensions,
+        context,
+        globalParams.zoom,
+        globalParams.panX,
+        globalParams.panY
+      );
       const coordSampler = coordGenerator.createCoordinateSampler(context);
 
       // Create output buffer at supersampled resolution (RGBA format: 4 bytes per pixel)
@@ -198,17 +222,14 @@ export const App: Component = () => {
         paramBuffer = parameterManager.createParameterBuffer(shader.parameters, paramValues);
       }
 
-      // Create bind group layout and bind group
+      // Check if shader uses iterations (feedback loop)
+      // Use stored iteration value if available, otherwise use shader default
+      const iterations = shaderStore.getIterationValue(shaderId) ?? shader.iterations ?? 1;
+      const hasIterations = iterations > 1;
       const hasParams = shader.parameters.length > 0;
-      const layout = pipelineBuilder.createStandardLayout(hasParams, false, shader.cacheKey);
-      const bindGroup = pipelineBuilder.createStandardBindGroup(
-        layout,
-        coordTexture,
-        coordSampler,
-        outputBuffer,
-        dimensionsBuffer,
-        paramBuffer
-      );
+
+      // Create bind group layout (with prevFrame support if iterations > 1)
+      const layout = pipelineBuilder.createStandardLayout(hasParams, hasIterations, shader.cacheKey);
 
       // Create pipeline
       const pipeline = pipelineBuilder.createPipeline({
@@ -218,25 +239,122 @@ export const App: Component = () => {
         label: shader.cacheKey,
       });
 
-      // Execute at supersampled resolution
       const workgroups = executor.calculateWorkgroups(superDimensions.width, superDimensions.height);
-      const executionContext = createExecutionContext(pipeline, bindGroup, workgroups, outputBuffer);
-
       const startExec = performance.now();
-      await executor.execute(executionContext);
+
+      if (hasIterations) {
+        // Feedback loop: create two textures for ping-pong
+        const device = context.getDevice();
+        const textureA = device.createTexture({
+          size: [superDimensions.width, superDimensions.height],
+          format: 'rgba32float', // Use rgba32float to match buffer format
+          usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST,
+          label: 'feedback-texture-A',
+        });
+        const textureB = device.createTexture({
+          size: [superDimensions.width, superDimensions.height],
+          format: 'rgba32float', // Use rgba32float to match buffer format
+          usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST,
+          label: 'feedback-texture-B',
+        });
+
+        // Initialize textureB to black/zero for first iteration
+        // rgba32float uses 16 bytes per pixel (4 channels * 4 bytes each)
+        const zeroData = new Float32Array(superDimensions.width * superDimensions.height * 4);
+        device.queue.writeTexture(
+          { texture: textureB },
+          zeroData,
+          { bytesPerRow: superDimensions.width * 16 },
+          [superDimensions.width, superDimensions.height]
+        );
+
+        // Create sampler for prevFrame (non-filtering for rgba32float)
+        const prevSampler = device.createSampler({
+          addressModeU: 'mirror-repeat',
+          addressModeV: 'mirror-repeat',
+          magFilter: 'nearest',
+          minFilter: 'nearest',
+        });
+
+        // Ping-pong between textures
+        for (let iter = 0; iter < iterations; iter++) {
+          const isLastIter = iter === iterations - 1;
+          const currentTexture = iter % 2 === 0 ? textureA : textureB;
+          const prevTexture = iter % 2 === 0 ? textureB : textureA;
+
+          // Create bind group for this iteration (always include prevFrame, even on first iteration)
+          const bindGroup = pipelineBuilder.createStandardBindGroup(
+            layout,
+            coordTexture,
+            coordSampler,
+            outputBuffer,
+            dimensionsBuffer,
+            paramBuffer,
+            prevTexture, // Always provide prevTexture (black on first iteration)
+            prevSampler
+          );
+
+          // Execute compute shader to current texture storage binding
+          // Note: We're still writing to outputBuffer, but we'll copy it to texture after
+          const executionContext = createExecutionContext(pipeline, bindGroup, workgroups, outputBuffer);
+          await executor.execute(executionContext);
+
+          // Copy output buffer to current texture for next iteration (unless last)
+          if (!isLastIter) {
+            const commandEncoder = device.createCommandEncoder();
+            commandEncoder.copyBufferToTexture(
+              { buffer: outputBuffer, bytesPerRow: superDimensions.width * 16 }, // Output buffer is vec4<f32> = 16 bytes per pixel
+              { texture: currentTexture }, // Texture is rgba16float = 8 bytes per pixel (GPU handles conversion)
+              [superDimensions.width, superDimensions.height]
+            );
+            device.queue.submit([commandEncoder.finish()]);
+            await device.queue.onSubmittedWorkDone();
+          }
+        }
+
+        // Cleanup textures
+        textureA.destroy();
+        textureB.destroy();
+      } else {
+        // Single execution (no iterations)
+        const bindGroup = pipelineBuilder.createStandardBindGroup(
+          layout,
+          coordTexture,
+          coordSampler,
+          outputBuffer,
+          dimensionsBuffer,
+          paramBuffer
+        );
+
+        const executionContext = createExecutionContext(pipeline, bindGroup, workgroups, outputBuffer);
+        await executor.execute(executionContext);
+      }
+
       const execTime = performance.now() - startExec;
+
+      // Apply brightness/contrast post-processing
+      // Note: GPU operations are queued in order, so the post-processor will
+      // automatically wait for shader execution to complete
+      const postProcessStart = performance.now();
+      const processedBuffer = await postProcessor.applyBrightnessContrast(
+        outputBuffer,
+        superDimensions,
+        globalParams.brightness,
+        globalParams.contrast
+      );
+      const postProcessTime = performance.now() - postProcessStart;
 
       // Downsample on GPU, then convert to ImageData
       const downsampleStart = performance.now();
-      const downsampledBuffer = resultRenderer.downsample(outputBuffer, superDimensions, dimensions, supersampleFactor);
+      const downsampledBuffer = resultRenderer.downsample(processedBuffer, superDimensions, dimensions, supersampleFactor);
       const imageData = await resultRenderer.bufferToImageData(downsampledBuffer, dimensions);
       const downsampleTime = performance.now() - downsampleStart;
 
-      const totalTime = compileTime + execTime + downsampleTime;
+      const totalTime = compileTime + execTime + postProcessTime + downsampleTime;
 
       // Log execution time
       addLog(
-        `Rendered "${shader.name}": compile ${compileTime.toFixed(1)}ms + exec ${execTime.toFixed(1)}ms + downsample ${downsampleTime.toFixed(1)}ms = ${totalTime.toFixed(1)}ms (${superDimensions.width}x${superDimensions.height} → ${dimensions.width}x${dimensions.height})`
+        `Rendered "${shader.name}": compile ${compileTime.toFixed(1)}ms + exec ${execTime.toFixed(1)}ms + post ${postProcessTime.toFixed(1)}ms + downsample ${downsampleTime.toFixed(1)}ms = ${totalTime.toFixed(1)}ms (${superDimensions.width}x${superDimensions.height} → ${dimensions.width}x${dimensions.height})`
       );
 
       // Update result store
@@ -272,6 +390,24 @@ export const App: Component = () => {
     executeShader(shaderId);
   };
 
+  const handleIterationChange = (shaderId: string, value: number) => {
+    shaderStore.updateIterationValue(shaderId, value);
+    // Re-execute shader with new iteration count
+    executeShader(shaderId);
+  };
+
+  const handleGlobalParameterChange = (shaderId: string, paramName: keyof import('@/stores/shaderStore').GlobalParameters, value: number) => {
+    shaderStore.updateGlobalParameter(shaderId, paramName, value);
+    // Re-execute shader with new global parameters
+    executeShader(shaderId);
+  };
+
+  const handleGlobalParametersReset = (shaderId: string) => {
+    shaderStore.resetGlobalParameters(shaderId);
+    // Re-execute shader with reset parameters
+    executeShader(shaderId);
+  };
+
   const handleEvolve = async (shaderId: string) => {
     if (!shaderEvolver) {
       alert('Evolution feature requires VITE_ANTHROPIC_API_KEY environment variable');
@@ -280,6 +416,19 @@ export const App: Component = () => {
 
     const shader = shaderStore.getShader(shaderId);
     if (!shader) return;
+
+    // Bake current parameter values as defaults for evolution
+    const currentParamValues = shaderStore.getParameterValues(shaderId);
+    const shaderWithBakedParams: ShaderDefinition = {
+      ...shader,
+      parameters: shader.parameters.map(param => {
+        const currentValue = currentParamValues?.get(param.name);
+        if (currentValue !== undefined) {
+          return { ...param, default: currentValue };
+        }
+        return param;
+      }),
+    };
 
     // Start evolution
     const childrenCount = 6;
@@ -298,8 +447,8 @@ export const App: Component = () => {
 
       addLog(`Generating ${childrenCount} shader variations...`);
 
-      // Evolve all children in one batch call with current temperature
-      const results = await shaderEvolver.evolveShaderBatch(shader, childrenCount, currentTemp);
+      // Evolve all children in one batch call with current temperature and baked params
+      const results = await shaderEvolver.evolveShaderBatch(shaderWithBakedParams, childrenCount, currentTemp);
 
       addLog(`Received ${results.length} variations, processing...`, 'success');
 
@@ -355,15 +504,84 @@ export const App: Component = () => {
     executeShader(child.id);
   };
 
-  // Re-execute shaders when active shaders change
-  createEffect(() => {
-    if (webgpuReady()) {
-      const activeShaders = shaderStore.getActiveShaders();
-      if (activeShaders.length > 0) {
-        executeAllShaders();
-      }
+  const handleMashupToggle = (shaderId: string) => {
+    shaderStore.toggleMashupSelection(shaderId);
+  };
+
+  const handleMashup = async () => {
+    if (!shaderEvolver) {
+      alert('Mashup feature requires VITE_ANTHROPIC_API_KEY environment variable');
+      return;
     }
-  });
+
+    const selectedShaders = shaderStore.getMashupSelected();
+    if (selectedShaders.length < 2) {
+      alert('Please select at least 2 shaders for mashup');
+      return;
+    }
+
+    const mashupCount = 6;
+    const currentTemp = temperature(); // Use current temperature
+    const parentNames = selectedShaders.map(s => s.name);
+
+    addLog(`Starting mashup of ${selectedShaders.length} shaders: ${parentNames.join(', ')} (temp: ${currentTemp.toFixed(2)}, variants: ${mashupCount})`);
+
+    try {
+      // Generate mashup variations
+      const results = await shaderEvolver.evolveMashup(selectedShaders, mashupCount, currentTemp);
+
+      addLog(`Received ${results.length} mashup variations, processing...`, 'success');
+
+      // Clear previous mashup results
+      evolutionStore.clearMashupResults();
+
+      // Process each mashup result
+      for (let i = 0; i < results.length; i++) {
+        const result = results[i];
+
+        if (result.success && result.shader) {
+          addLog(`✓ Mashup ${i + 1}/${mashupCount} compiled successfully`);
+
+          // Add to mashup results
+          evolutionStore.addMashupResult(result.shader);
+
+          // Execute mashup shader to generate ImageData
+          await executeShader(result.shader.id, result.shader);
+        } else {
+          addLog(`✗ Mashup ${i + 1}/${mashupCount} failed: ${result.error}`, 'error');
+          console.warn(`Failed to create mashup ${i + 1}:`, result.error);
+        }
+      }
+
+      // Update mashup results with parent names
+      evolutionStore.setMashupResults(
+        evolutionStore.getMashupResults(),
+        parentNames
+      );
+
+      addLog(`Mashup complete: ${results.filter(r => r.success).length}/${mashupCount} succeeded`, 'success');
+    } catch (error) {
+      const errorMsg = error instanceof Error ? error.message : 'Unknown mashup error';
+      addLog(`Mashup failed: ${errorMsg}`, 'error');
+      console.error('Mashup error:', error);
+    }
+  };
+
+  const handleClearMashupSelection = () => {
+    shaderStore.clearMashupSelection();
+  };
+
+  const handleClearMashupResults = () => {
+    evolutionStore.clearMashupResults();
+  };
+
+  // Note: We don't need a reactive effect to re-execute all shaders on every store change.
+  // All shader executions are handled explicitly:
+  // - loadExampleShaders() calls executeAllShaders()
+  // - handleParameterChange() calls executeShader(shaderId)
+  // - handleGlobalParameterChange() calls executeShader(shaderId)
+  // - handlePromoteChild() calls executeShader(shaderId)
+  // This prevents unwanted re-execution of all shaders when only one shader's parameters change.
 
   return (
     <div class="app">
@@ -400,16 +618,34 @@ export const App: Component = () => {
           <ShaderGrid
             shaders={shaderStore.getActiveShaders()}
             onParameterChange={handleParameterChange}
+            onIterationChange={handleIterationChange}
+            onGlobalParameterChange={handleGlobalParameterChange}
+            onGlobalParametersReset={handleGlobalParametersReset}
             onEvolve={handleEvolve}
             onCancelEvolution={handleCancelEvolution}
             onPromoteChild={handlePromoteChild}
+            onMashupToggle={handleMashupToggle}
           />
+
+          <Show when={evolutionStore.getMashupResults().length > 0}>
+            <MashupResults
+              mashups={evolutionStore.getMashupResults()}
+              parentNames={evolutionStore.getMashupParentNames()}
+              onPromote={handlePromoteChild}
+              onClear={handleClearMashupResults}
+            />
+          </Show>
 
           <Show when={resultStore.isProcessing}>
             <div class="processing-indicator">Processing...</div>
           </Show>
         </main>
       </Show>
+
+      <MashupToolbar
+        onMashup={handleMashup}
+        onClear={handleClearMashupSelection}
+      />
 
       <LogOverlay
         logs={logs()}

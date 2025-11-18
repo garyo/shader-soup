@@ -1,5 +1,5 @@
 /**
- * Children Grid - Display evolved shader children
+ * Mashup Results - Display mashup shader variations
  */
 
 import { type Component, For, Show, createSignal } from 'solid-js';
@@ -7,27 +7,43 @@ import { ChangelogModal } from './ChangelogModal';
 import type { ShaderDefinition } from '@/types/core';
 import { resultStore } from '@/stores';
 
-interface ChildrenGridProps {
-  children: ShaderDefinition[];
-  onPromote: (child: ShaderDefinition) => void;
+interface MashupResultsProps {
+  mashups: ShaderDefinition[];
+  parentNames: string[];
+  onPromote: (mashup: ShaderDefinition) => void;
+  onClear: () => void;
 }
 
-export const ChildrenGrid: Component<ChildrenGridProps> = (props) => {
+export const MashupResults: Component<MashupResultsProps> = (props) => {
   const [changelogShader, setChangelogShader] = createSignal<ShaderDefinition | null>(null);
 
   return (
-    <div class="children-grid">
-      <h4 class="children-header">
-        Evolved Children ({props.children.length})
-      </h4>
+    <div class="mashup-results">
+      <div class="mashup-results-header">
+        <div>
+          <h4 class="mashup-header">
+            Mashup Results ({props.mashups.length})
+          </h4>
+          <p class="mashup-parents">
+            Combined from: {props.parentNames.join(', ')}
+          </p>
+        </div>
+        <button
+          onClick={props.onClear}
+          class="mashup-clear-results-button"
+          title="Clear mashup results"
+        >
+          Clear Results
+        </button>
+      </div>
 
-      <div class="children-cards">
-        <For each={props.children}>
-          {(child) => {
-            const result = () => resultStore.getResult(child.id);
+      <div class="mashup-cards">
+        <For each={props.mashups}>
+          {(mashup) => {
+            const result = () => resultStore.getResult(mashup.id);
 
             return (
-              <div class="child-card">
+              <div class="mashup-card">
                 <Show when={result()}>
                   {(r) => {
                     let canvasRef: HTMLCanvasElement | undefined;
@@ -47,26 +63,26 @@ export const ChildrenGrid: Component<ChildrenGridProps> = (props) => {
                         ref={canvasRef}
                         width={r().imageData.width}
                         height={r().imageData.height}
-                        class="child-canvas"
+                        class="mashup-canvas"
                       />
                     );
                   }}
                 </Show>
 
-                <div class="child-info">
-                  <div class="child-name">{child.name}</div>
-                  <div class="child-buttons">
+                <div class="mashup-info">
+                  <div class="mashup-name">{mashup.name}</div>
+                  <div class="mashup-buttons">
                     <button
-                      onClick={() => props.onPromote(child)}
+                      onClick={() => props.onPromote(mashup)}
                       class="promote-button"
                       title="Add to main grid"
                     >
                       Promote
                     </button>
-                    <Show when={child.changelog}>
+                    <Show when={mashup.changelog}>
                       <button
-                        onClick={() => setChangelogShader(child)}
-                        class="child-changelog-button"
+                        onClick={() => setChangelogShader(mashup)}
+                        class="mashup-changelog-button"
                         title="View changelog"
                       >
                         ❓

@@ -25,6 +25,9 @@ interface EvolutionState {
   activeEvolutions: Map<string, EvolutionProgress>;
   // Completed children: shaderId -> list of evolved children
   children: Map<string, ShaderDefinition[]>;
+  // Mashup results (separate from regular evolution)
+  mashupResults: ShaderDefinition[];
+  mashupParentNames: string[]; // Names of parent shaders for current mashup
   // Evolution settings
   defaultChildrenCount: number;
   defaultTemperature: number;
@@ -33,6 +36,8 @@ interface EvolutionState {
 const [state, setState] = createStore<EvolutionState>({
   activeEvolutions: new Map(),
   children: new Map(),
+  mashupResults: [],
+  mashupParentNames: [],
   defaultChildrenCount: 10,
   defaultTemperature: 0.5,
 });
@@ -169,5 +174,28 @@ export const evolutionStore = {
 
   setDefaultTemperature(temp: number): void {
     setState('defaultTemperature', temp);
+  },
+
+  // Mashup methods
+  getMashupResults(): ShaderDefinition[] {
+    return state.mashupResults;
+  },
+
+  getMashupParentNames(): string[] {
+    return state.mashupParentNames;
+  },
+
+  setMashupResults(results: ShaderDefinition[], parentNames: string[]): void {
+    setState('mashupResults', results);
+    setState('mashupParentNames', parentNames);
+  },
+
+  clearMashupResults(): void {
+    setState('mashupResults', []);
+    setState('mashupParentNames', []);
+  },
+
+  addMashupResult(result: ShaderDefinition): void {
+    setState('mashupResults', (results) => [...results, result]);
   },
 };

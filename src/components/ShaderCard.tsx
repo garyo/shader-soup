@@ -4,25 +4,35 @@
 
 import { type Component, createEffect, For, Show, createSignal } from 'solid-js';
 import { ParameterSlider } from './ParameterSlider';
+import { IterationSlider } from './IterationSlider';
+import { GlobalParametersComponent } from './GlobalParameters';
+import { TabbedPanel } from './TabbedPanel';
 import { EvolutionStatus } from './EvolutionStatus';
 import { ChildrenGrid } from './ChildrenGrid';
 import { ShaderCodeModal } from './ShaderCodeModal';
+import { ChangelogModal } from './ChangelogModal';
 import type { ShaderDefinition, ShaderResult } from '@/types/core';
 import { shaderStore, evolutionStore } from '@/stores';
+import type { GlobalParameters } from '@/stores/shaderStore';
 
 interface ShaderCardProps {
   shader: ShaderDefinition;
   result?: ShaderResult;
   error?: string;
   onParameterChange: (paramName: string, value: number) => void;
+  onIterationChange: (value: number) => void;
+  onGlobalParameterChange: (paramName: keyof GlobalParameters, value: number) => void;
+  onGlobalParametersReset: () => void;
   onEvolve: (shaderId: string) => void;
   onCancelEvolution: (shaderId: string) => void;
   onPromoteChild: (child: ShaderDefinition) => void;
+  onMashupToggle: (shaderId: string) => void;
 }
 
 export const ShaderCard: Component<ShaderCardProps> = (props) => {
   let canvasRef: HTMLCanvasElement | undefined;
   const [showCodeModal, setShowCodeModal] = createSignal(false);
+  const [showChangelogModal, setShowChangelogModal] = createSignal(false);
 
   // Draw result to canvas when it changes
   createEffect(() => {
@@ -35,6 +45,7 @@ export const ShaderCard: Component<ShaderCardProps> = (props) => {
   });
 
   const paramValues = () => shaderStore.getParameterValues(props.shader.id) || new Map();
+  const globalParams = () => shaderStore.getGlobalParameters(props.shader.id);
   const evolutionProgress = () => evolutionStore.getProgress(props.shader.id);
   const children = () => evolutionStore.getChildren(props.shader.id);
   const isEvolving = () => evolutionStore.isEvolving(props.shader.id);
@@ -42,7 +53,16 @@ export const ShaderCard: Component<ShaderCardProps> = (props) => {
   return (
     <div class="shader-card">
       <div class="shader-header">
-        <h3 class="shader-name">{props.shader.name}</h3>
+        <div class="shader-header-left">
+          <input
+            type="checkbox"
+            checked={shaderStore.isMashupSelected(props.shader.id)}
+            onChange={() => props.onMashupToggle(props.shader.id)}
+            class="mashup-checkbox"
+            title="Select for mashup"
+          />
+          <h3 class="shader-name">{props.shader.name}</h3>
+        </div>
         <div class="shader-info">
           {props.result && (
             <span class="execution-time">{props.result.executionTime.toFixed(2)}ms</span>
@@ -69,19 +89,54 @@ export const ShaderCard: Component<ShaderCardProps> = (props) => {
         </Show>
       </div>
 
-      <Show when={props.shader.parameters.length > 0}>
-        <div class="shader-parameters">
-          <For each={props.shader.parameters}>
-            {(param) => (
-              <ParameterSlider
-                parameter={param}
-                value={paramValues().get(param.name) ?? param.default}
-                onChange={(value) => props.onParameterChange(param.name, value)}
+      {/* Tabbed panel for Parameters and Global Controls */}
+      <TabbedPanel
+        tabs={[
+          {
+            id: 'params',
+            label: 'Params',
+            content: (
+              <div class="shader-parameters">
+                {/* Iteration slider (if shader uses iterations) */}
+                <Show when={props.shader.iterations && props.shader.iterations > 1}>
+                  <IterationSlider
+                    value={shaderStore.getIterationValue(props.shader.id) ?? props.shader.iterations ?? 1}
+                    onChange={props.onIterationChange}
+                  />
+                </Show>
+
+                {/* Parameter sliders */}
+                <For each={props.shader.parameters}>
+                  {(param) => (
+                    <ParameterSlider
+                      parameter={param}
+                      value={paramValues().get(param.name) ?? param.default}
+                      onChange={(value) => props.onParameterChange(param.name, value)}
+                    />
+                  )}
+                </For>
+
+                {/* Show message if no parameters */}
+                <Show when={props.shader.parameters.length === 0 && !(props.shader.iterations && props.shader.iterations > 1)}>
+                  <div class="no-parameters">No parameters available</div>
+                </Show>
+              </div>
+            ),
+          },
+          {
+            id: 'global',
+            label: 'Global',
+            content: (
+              <GlobalParametersComponent
+                parameters={globalParams()}
+                onChange={props.onGlobalParameterChange}
+                onReset={props.onGlobalParametersReset}
               />
-            )}
-          </For>
-        </div>
-      </Show>
+            ),
+          },
+        ]}
+        defaultTab="params"
+      />
 
       <Show when={props.shader.description}>
         <div class="shader-description">
@@ -89,10 +144,17 @@ export const ShaderCard: Component<ShaderCardProps> = (props) => {
         </div>
       </Show>
 
-      {/* View Code Button */}
-      <button onClick={() => setShowCodeModal(true)} class="view-code-button">
-        📄 View Code
-      </button>
+      {/* View Code and Changelog Buttons */}
+      <div class="shader-actions">
+        <button onClick={() => setShowCodeModal(true)} class="view-code-button">
+          📄 Source Code
+        </button>
+        <Show when={props.shader.changelog}>
+          <button onClick={() => setShowChangelogModal(true)} class="changelog-button" title="View changelog">
+            ❓
+          </button>
+        </Show>
+      </div>
 
       {/* Evolution Controls */}
       <Show when={!isEvolving()}>
@@ -122,6 +184,15 @@ export const ShaderCard: Component<ShaderCardProps> = (props) => {
           shaderName={props.shader.name}
           shaderSource={props.shader.source}
           onClose={() => setShowCodeModal(false)}
+        />
+      </Show>
+
+      {/* Changelog Modal */}
+      <Show when={showChangelogModal() && props.shader.changelog}>
+        <ChangelogModal
+          shaderName={props.shader.name}
+          changelog={props.shader.changelog!}
+          onClose={() => setShowChangelogModal(false)}
         />
       </Show>
     </div>

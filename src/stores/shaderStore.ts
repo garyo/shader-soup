@@ -7,20 +7,42 @@ import type { ShaderDefinition, ShaderParameter } from '@/types/core';
 
 const STORAGE_KEY = 'evolve-image-gen-promoted-shaders';
 
+export interface GlobalParameters {
+  brightness: number; // -1 to 1, default 0
+  contrast: number;   // -1 to 1, default 0
+  zoom: number;       // 0.1 to 10, default 1
+  panX: number;       // -2 to 2, default 0
+  panY: number;       // -2 to 2, default 0
+}
+
+export const defaultGlobalParameters: GlobalParameters = {
+  brightness: 0,
+  contrast: 0,
+  zoom: 1,
+  panX: 0,
+  panY: 0,
+};
+
 interface ShaderState {
   shaders: Map<string, ShaderDefinition>;
   activeShaders: Set<string>;
   parameterValues: Map<string, Map<string, number>>; // shaderId -> paramName -> value
+  iterationValues: Map<string, number>; // shaderId -> iteration count
+  globalParameters: Map<string, GlobalParameters>; // shaderId -> global parameters
   selectedShaderId: string | null;
   promotedShaderIds: Set<string>; // Track which shaders are promoted (saved to localStorage)
+  selectedForMashup: Set<string>; // Track shaders selected for mashup
 }
 
 const [state, setState] = createStore<ShaderState>({
   shaders: new Map(),
   activeShaders: new Set(),
   parameterValues: new Map(),
+  iterationValues: new Map(),
+  globalParameters: new Map(),
   selectedShaderId: null,
   promotedShaderIds: new Set(),
+  selectedForMashup: new Set(),
 });
 
 // Helper functions for localStorage
@@ -189,6 +211,24 @@ export const shaderStore = {
   },
 
   /**
+   * Get iteration value for a shader
+   */
+  getIterationValue(shaderId: string): number | undefined {
+    return state.iterationValues.get(shaderId);
+  },
+
+  /**
+   * Update iteration value for a shader
+   */
+  updateIterationValue(shaderId: string, value: number) {
+    setState('iterationValues', (values) => {
+      const newValues = new Map(values);
+      newValues.set(shaderId, value);
+      return newValues;
+    });
+  },
+
+  /**
    * Toggle shader active state
    */
   toggleShader(id: string) {
@@ -315,5 +355,84 @@ export const shaderStore = {
     });
 
     savePromotedShadersToStorage();
+  },
+
+  /**
+   * Toggle shader selection for mashup
+   */
+  toggleMashupSelection(id: string) {
+    setState('selectedForMashup', (selected) => {
+      const newSelected = new Set(selected);
+      if (newSelected.has(id)) {
+        newSelected.delete(id);
+      } else {
+        newSelected.add(id);
+      }
+      return newSelected;
+    });
+  },
+
+  /**
+   * Check if shader is selected for mashup
+   */
+  isMashupSelected(id: string): boolean {
+    return state.selectedForMashup.has(id);
+  },
+
+  /**
+   * Get all selected shaders for mashup
+   */
+  getMashupSelected(): ShaderDefinition[] {
+    return Array.from(state.selectedForMashup)
+      .map((id) => state.shaders.get(id))
+      .filter((shader): shader is ShaderDefinition => shader !== undefined);
+  },
+
+  /**
+   * Clear mashup selection
+   */
+  clearMashupSelection() {
+    setState('selectedForMashup', new Set());
+  },
+
+  /**
+   * Get count of selected shaders
+   */
+  getMashupSelectionCount(): number {
+    return state.selectedForMashup.size;
+  },
+
+  /**
+   * Get global parameters for a shader
+   */
+  getGlobalParameters(shaderId: string): GlobalParameters {
+    return state.globalParameters.get(shaderId) || { ...defaultGlobalParameters };
+  },
+
+  /**
+   * Update a single global parameter
+   */
+  updateGlobalParameter(
+    shaderId: string,
+    paramName: keyof GlobalParameters,
+    value: number
+  ) {
+    setState('globalParameters', (params) => {
+      const newParams = new Map(params);
+      const current = newParams.get(shaderId) || { ...defaultGlobalParameters };
+      newParams.set(shaderId, { ...current, [paramName]: value });
+      return newParams;
+    });
+  },
+
+  /**
+   * Reset global parameters to defaults
+   */
+  resetGlobalParameters(shaderId: string) {
+    setState('globalParameters', (params) => {
+      const newParams = new Map(params);
+      newParams.set(shaderId, { ...defaultGlobalParameters });
+      return newParams;
+    });
   },
 };

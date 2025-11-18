@@ -52,6 +52,29 @@ export class ParameterManager {
   }
 
   /**
+   * Parse iterations directive from shader source code
+   * Format: // @iterations N
+   * Example: // @iterations 10
+   *
+   * @param shaderSource - WGSL shader source code
+   * @returns Number of iterations (default: 1)
+   */
+  public parseIterations(shaderSource: string): number {
+    const iterationsRegex = /\/\/\s*@iterations\s+(\d+)/;
+    const match = shaderSource.match(iterationsRegex);
+
+    if (match) {
+      const iterations = parseInt(match[1], 10);
+      if (iterations > 0 && iterations <= 100) {
+        return iterations;
+      }
+      console.warn(`Invalid iterations value ${iterations}, must be 1-100. Using 1.`);
+    }
+
+    return 1;
+  }
+
+  /**
    * Create a uniform buffer for parameters
    * @param parameters - Shader parameters
    * @param values - Optional parameter values (defaults to default values)

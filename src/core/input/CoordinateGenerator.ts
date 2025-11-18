@@ -201,9 +201,18 @@ export class CoordinateGenerator {
    * GPU-side generation using compute shader with f16 support
    * @param dimensions - Texture dimensions
    * @param context - WebGPU context
+   * @param zoom - Zoom factor (default 1.0, >1 zooms out, <1 zooms in)
+   * @param panX - Pan offset in X direction (default 0)
+   * @param panY - Pan offset in Y direction (default 0)
    * @returns GPU texture with rgba16float format containing (x, y) coords
    */
-  public createCoordinateTexture(dimensions: Dimensions, context: WebGPUContext): GPUTexture {
+  public createCoordinateTexture(
+    dimensions: Dimensions,
+    context: WebGPUContext,
+    zoom: number = 1.0,
+    panX: number = 0.0,
+    panY: number = 0.0
+  ): GPUTexture {
     const device = context.getDevice();
     const { width, height } = dimensions;
 
@@ -216,8 +225,16 @@ export class CoordinateGenerator {
         height: u32,
       }
 
+      struct Transform {
+        zoom: f32,
+        panX: f32,
+        panY: f32,
+        padding: f32,
+      }
+
       @group(0) @binding(0) var<storage, read_write> coords: array<vec4<f16>>;
       @group(0) @binding(1) var<uniform> dims: Dimensions;
+      @group(0) @binding(2) var<uniform> transform: Transform;
 
       @compute @workgroup_size(8, 8)
       fn main(@builtin(global_invocation_id) id: vec3<u32>) {
@@ -234,7 +251,13 @@ export class CoordinateGenerator {
         // Normalize Y to maintain aspect ratio, centered at 0
         let normalizedY = ((f32(id.y) / f32(dims.height - 1u)) * 2.0 - 1.0) / aspectRatio;
 
-        coords[index] = vec4<f16>(f16(normalizedX), f16(normalizedY), f16(0.0), f16(1.0));
+        // Apply zoom and pan transformations
+        // Zoom: divide by zoom (zoom > 1 = zoom in, smaller coord range)
+        // Pan: subtract pan (positive panX shifts view left, positive panY shifts view up)
+        let transformedX = normalizedX / transform.zoom - transform.panX;
+        let transformedY = normalizedY / transform.zoom + transform.panY;
+
+        coords[index] = vec4<f16>(f16(transformedX), f16(transformedY), f16(0.0), f16(1.0));
       }
     `;
 
@@ -260,11 +283,21 @@ export class CoordinateGenerator {
     });
     device.queue.writeBuffer(dimsBuffer, 0, dimsData);
 
+    // Create transform uniform (zoom, panX, panY, padding)
+    const transformData = new Float32Array([zoom, panX, panY, 0.0]);
+    const transformBuffer = device.createBuffer({
+      label: 'transform-uniform',
+      size: 16, // 4 floats * 4 bytes
+      usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+    });
+    device.queue.writeBuffer(transformBuffer, 0, transformData);
+
     // Create bind group layout and bind group
     const bindGroupLayout = device.createBindGroupLayout({
       entries: [
         { binding: 0, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'storage' } },
         { binding: 1, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'uniform' } },
+        { binding: 2, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'uniform' } },
       ],
     });
 
@@ -273,6 +306,7 @@ export class CoordinateGenerator {
       entries: [
         { binding: 0, resource: { buffer: coordBuffer } },
         { binding: 1, resource: { buffer: dimsBuffer } },
+        { binding: 2, resource: { buffer: transformBuffer } },
       ],
     });
 
