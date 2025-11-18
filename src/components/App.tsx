@@ -242,9 +242,13 @@ export const App: Component = () => {
       const workgroups = executor.calculateWorkgroups(superDimensions.width, superDimensions.height);
       const startExec = performance.now();
 
+      // Push error scopes for shader execution
+      const device = context.getDevice();
+      device.pushErrorScope('validation');
+      device.pushErrorScope('out-of-memory');
+
       if (hasIterations) {
         // Feedback loop: create two textures for ping-pong
-        const device = context.getDevice();
         const textureA = device.createTexture({
           size: [superDimensions.width, superDimensions.height],
           format: 'rgba32float', // Use rgba32float to match buffer format
@@ -332,22 +336,56 @@ export const App: Component = () => {
 
       const execTime = performance.now() - startExec;
 
+      // Check for GPU errors during shader execution
+      const execMemError = await device.popErrorScope();
+      if (execMemError) {
+        throw new Error(`GPU out-of-memory during shader execution: ${execMemError.message}`);
+      }
+      const execValError = await device.popErrorScope();
+      if (execValError) {
+        throw new Error(`GPU validation error during shader execution: ${execValError.message}`);
+      }
+
       // Apply gamma/contrast post-processing (in linear RGB space)
-      // Note: GPU operations are queued in order, so the post-processor will
-      // automatically wait for shader execution to complete
       const postProcessStart = performance.now();
+      device.pushErrorScope('validation');
+      device.pushErrorScope('out-of-memory');
+
       const processedBuffer = await postProcessor.applyGammaContrast(
         outputBuffer,
         superDimensions,
         globalParams.gamma,
         globalParams.contrast
       );
+
+      const postMemError = await device.popErrorScope();
+      if (postMemError) {
+        throw new Error(`GPU out-of-memory during post-processing: ${postMemError.message}`);
+      }
+      const postValError = await device.popErrorScope();
+      if (postValError) {
+        throw new Error(`GPU validation error during post-processing: ${postValError.message}`);
+      }
+
       const postProcessTime = performance.now() - postProcessStart;
 
       // Downsample on GPU, then convert to ImageData
       const downsampleStart = performance.now();
+      device.pushErrorScope('validation');
+      device.pushErrorScope('out-of-memory');
+
       const downsampledBuffer = resultRenderer.downsample(processedBuffer, superDimensions, dimensions, supersampleFactor);
       const imageData = await resultRenderer.bufferToImageData(downsampledBuffer, dimensions);
+
+      const downMemError = await device.popErrorScope();
+      if (downMemError) {
+        throw new Error(`GPU out-of-memory during downsampling: ${downMemError.message}`);
+      }
+      const downValError = await device.popErrorScope();
+      if (downValError) {
+        throw new Error(`GPU validation error during downsampling: ${downValError.message}`);
+      }
+
       const downsampleTime = performance.now() - downsampleStart;
 
       const totalTime = compileTime + execTime + postProcessTime + downsampleTime;
@@ -540,15 +578,13 @@ export const App: Component = () => {
       // Get global parameters
       const globalParams = shaderStore.getGlobalParameters(shaderId);
 
-      // Check GPU limits
-      const limits = context.getDevice().limits;
-      addLog(`GPU max texture dimension: ${limits.maxTextureDimension2D}`);
-      addLog(`GPU max buffer size: ${(limits.maxBufferSize / 1024 / 1024 / 1024).toFixed(2)} GB`);
-      addLog(`GPU max storage buffer binding size: ${(limits.maxStorageBufferBindingSize / 1024 / 1024).toFixed(2)} MB`);
-      addLog(`GPU max compute workgroups per dimension: ${limits.maxComputeWorkgroupsPerDimension}`);
-      addLog(`Requested texture size: ${superDimensions.width}x${superDimensions.height}`);
+      // Get device for error scopes
+      const device = context.getDevice();
 
       // Create coordinate texture with zoom/pan
+      device.pushErrorScope('validation');
+      device.pushErrorScope('out-of-memory');
+
       const coordTexture = await coordGenerator.createCoordinateTexture(
         superDimensions,
         context,
@@ -556,27 +592,15 @@ export const App: Component = () => {
         globalParams.panX,
         globalParams.panY
       );
-      addLog(`Coordinate texture created: ${coordTexture.width}x${coordTexture.height}`);
 
-      // DEBUG: Verify coordinate texture has data by reading it back
-      const device = context.getDevice();
-      const coordReadBuffer = device.createBuffer({
-        size: 16, // Just read first pixel (vec4<f16> = 8 bytes)
-        usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ,
-        label: 'coord-read-buffer',
-      });
-      const encoder = device.createCommandEncoder();
-      encoder.copyTextureToBuffer(
-        { texture: coordTexture, mipLevel: 0, origin: [0, 0, 0] },
-        { buffer: coordReadBuffer, bytesPerRow: 256, rowsPerImage: 1 },
-        { width: 1, height: 1, depthOrArrayLayers: 1 }
-      );
-      device.queue.submit([encoder.finish()]);
-      await device.queue.onSubmittedWorkDone();
-      await coordReadBuffer.mapAsync(GPUMapMode.READ);
-      const coordData = new Float16Array(coordReadBuffer.getMappedRange());
-      addLog(`Coord texture first pixel: X=${coordData[0].toFixed(3)} Y=${coordData[1].toFixed(3)}`);
-      coordReadBuffer.unmap();
+      const memError = await device.popErrorScope();
+      if (memError) {
+        throw new Error(`GPU out-of-memory creating coordinate texture: ${memError.message}`);
+      }
+      const valError = await device.popErrorScope();
+      if (valError) {
+        throw new Error(`GPU validation error creating coordinate texture: ${valError.message}`);
+      }
 
       const coordSampler = coordGenerator.createCoordinateSampler(context);
 
@@ -604,16 +628,12 @@ export const App: Component = () => {
         GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
         'dimensions-hires'
       );
-      addLog(`Dimensions: ${dimensionsData[0]} x ${dimensionsData[1]}`);
 
       // Create parameter buffer if shader has parameters
       let paramBuffer: GPUBuffer | undefined;
       if (shader.parameters.length > 0) {
         const paramValues = shaderStore.getParameterValues(shaderId);
         paramBuffer = parameterManager.createParameterBuffer(shader.parameters, paramValues);
-        addLog(`Parameters: ${shader.parameters.length} params`);
-      } else {
-        addLog(`No parameters for this shader`);
       }
 
       // Get iteration value
@@ -632,12 +652,14 @@ export const App: Component = () => {
 
       const workgroups = executor.calculateWorkgroups(superDimensions.width, superDimensions.height);
 
-      addLog(`Workgroups: ${workgroups.x}x${workgroups.y} (limit: ${limits.maxComputeWorkgroupsPerDimension})`);
-      addLog(`Executing shader: ${superDimensions.width}x${superDimensions.height}, workgroups: ${workgroups.x}x${workgroups.y}, iterations: ${iterations}`);
+      addLog(`Rendering at ${superDimensions.width}x${superDimensions.height}...`);
+
+      // Push error scopes for shader execution
+      device.pushErrorScope('validation');
+      device.pushErrorScope('out-of-memory');
 
       // Execute shader (with iterations if needed)
       if (hasIterations) {
-        const device = context.getDevice();
         const textureA = device.createTexture({
           size: [superDimensions.width, superDimensions.height],
           format: 'rgba32float',
@@ -716,16 +738,20 @@ export const App: Component = () => {
       // CRITICAL: Wait for shader execution to complete
       await context.getDevice().queue.onSubmittedWorkDone();
 
-      // Debug: Read one pixel from outputBuffer immediately after shader
-      try {
-        const testOut = await bufferManager.readFromBuffer(outputBuffer, 0, 16);
-        const testOutFloats = new Float32Array(testOut);
-        addLog(`Raw shader output - first pixel: R=${testOutFloats[0].toFixed(3)} G=${testOutFloats[1].toFixed(3)} B=${testOutFloats[2].toFixed(3)} A=${testOutFloats[3].toFixed(3)}`);
-      } catch (e) {
-        addLog(`Failed to read raw output: ${e}`, 'error');
+      // Check for GPU errors during shader execution
+      const execMemError = await device.popErrorScope();
+      if (execMemError) {
+        throw new Error(`GPU out-of-memory during shader execution: ${execMemError.message}`);
+      }
+      const execValError = await device.popErrorScope();
+      if (execValError) {
+        throw new Error(`GPU validation error during shader execution: ${execValError.message}`);
       }
 
       // Apply gamma/contrast post-processing
+      device.pushErrorScope('validation');
+      device.pushErrorScope('out-of-memory');
+
       const processedBuffer = await postProcessor.applyGammaContrast(
         outputBuffer,
         superDimensions,
@@ -733,7 +759,19 @@ export const App: Component = () => {
         globalParams.contrast
       );
 
+      const postMemError = await device.popErrorScope();
+      if (postMemError) {
+        throw new Error(`GPU out-of-memory during post-processing: ${postMemError.message}`);
+      }
+      const postValError = await device.popErrorScope();
+      if (postValError) {
+        throw new Error(`GPU validation error during post-processing: ${postValError.message}`);
+      }
+
       // Downsample to final resolution
+      device.pushErrorScope('validation');
+      device.pushErrorScope('out-of-memory');
+
       const downsampledBuffer = resultRenderer.downsample(
         processedBuffer,
         superDimensions,
@@ -741,14 +779,17 @@ export const App: Component = () => {
         supersampleFactor
       );
 
-      // Wait for all GPU work to complete before downloading
-      addLog(`Waiting for GPU operations to complete...`);
-      await context.getDevice().queue.onSubmittedWorkDone();
+      const downMemError = await device.popErrorScope();
+      if (downMemError) {
+        throw new Error(`GPU out-of-memory during downsampling: ${downMemError.message}`);
+      }
+      const downValError = await device.popErrorScope();
+      if (downValError) {
+        throw new Error(`GPU validation error during downsampling: ${downValError.message}`);
+      }
 
-      // Debug: Check first pixel only (read just 16 bytes)
-      const testData = await bufferManager.readFromBuffer(downsampledBuffer, 0, 16);
-      const testFloats = new Float32Array(testData);
-      addLog(`First pixel: R=${testFloats[0].toFixed(3)} G=${testFloats[1].toFixed(3)} B=${testFloats[2].toFixed(3)} A=${testFloats[3].toFixed(3)}`);
+      // Wait for all GPU work to complete before downloading
+      await context.getDevice().queue.onSubmittedWorkDone();
 
       // Download as PNG
       const filename = `${shader.name.replace(/[^a-z0-9]/gi, '_').toLowerCase()}_${hiResDimensions.width}x${hiResDimensions.height}.png`;

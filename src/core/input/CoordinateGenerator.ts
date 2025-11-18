@@ -268,13 +268,10 @@ export class CoordinateGenerator {
 
     // Check if we can use storage buffer or need to use texture directly
     const coordBufferSize = width * height * 4 * 2; // vec4<f16> = 8 bytes
-    console.log(`[CoordGen] Creating coord buffer: ${width}x${height}, size: ${coordBufferSize} bytes (${(coordBufferSize / 1024 / 1024).toFixed(2)} MB)`);
-
     const maxStorageSize = device.limits.maxStorageBufferBindingSize;
-    console.log(`[CoordGen] Max storage buffer binding size: ${(maxStorageSize / 1024 / 1024).toFixed(2)} MB`);
 
     if (coordBufferSize > maxStorageSize) {
-      console.log(`[CoordGen] Buffer size exceeds limit, using CPU-side generation`);
+      console.log(`[CoordGen] Buffer size (${(coordBufferSize / 1024 / 1024).toFixed(0)}MB) exceeds limit (${(maxStorageSize / 1024 / 1024).toFixed(0)}MB), using CPU generation`);
       // Fall back to CPU generation for very large textures
       return this.createCoordinateTextureCPU(dimensions, context, zoom, panX, panY);
     }
@@ -335,7 +332,6 @@ export class CoordinateGenerator {
     passEncoder.setBindGroup(0, bindGroup);
     const workgroupsX = Math.ceil(width / 8);
     const workgroupsY = Math.ceil(height / 8);
-    console.log(`[CoordGen] Dispatching workgroups: ${workgroupsX}x${workgroupsY}`);
     passEncoder.dispatchWorkgroups(workgroupsX, workgroupsY);
     passEncoder.end();
 
@@ -349,7 +345,6 @@ export class CoordinateGenerator {
 
     // Copy f16 buffer to texture (f16 → f16, no conversion)
     const bytesPerRow = Math.ceil((width * 8) / 256) * 256;
-    console.log(`[CoordGen] Buffer-to-texture copy: ${width}x${height}, bytesPerRow: ${bytesPerRow}`);
     commandEncoder.copyBufferToTexture(
       { buffer: coordBuffer, bytesPerRow },
       { texture },
@@ -382,8 +377,6 @@ export class CoordinateGenerator {
   ): Promise<GPUTexture> {
     const device = context.getDevice();
     const { width, height } = dimensions;
-
-    console.log(`[CoordGen CPU] Generating ${width}x${height} coordinates on CPU`);
 
     // Create Float32Array for coordinates (we'll convert to f16 via writeTexture)
     const coords = new Float32Array(width * height * 4);
@@ -423,8 +416,13 @@ export class CoordinateGenerator {
     const bytesPerRow = Math.ceil((width * 16) / 256) * 256;
     const maxChunkSize = 64 * 1024 * 1024; // 64MB chunks to stay well under limits
     const rowsPerChunk = Math.floor(maxChunkSize / bytesPerRow);
+    const numChunks = Math.ceil(height / rowsPerChunk);
 
-    console.log(`[CoordGen CPU] Writing texture in chunks: bytesPerRow=${bytesPerRow}, rowsPerChunk=${rowsPerChunk}`);
+    console.log(`[CoordGen CPU] Writing ${width}x${height} texture in ${numChunks} chunks`);
+
+    // Push error scopes for texture writing
+    device.pushErrorScope('validation');
+    device.pushErrorScope('out-of-memory');
 
     for (let startRow = 0; startRow < height; startRow += rowsPerChunk) {
       const rowsThisChunk = Math.min(rowsPerChunk, height - startRow);
@@ -438,12 +436,19 @@ export class CoordinateGenerator {
         { bytesPerRow },
         { width, height: rowsThisChunk, depthOrArrayLayers: 1 }
       );
-
-      console.log(`[CoordGen CPU] Wrote rows ${startRow} to ${startRow + rowsThisChunk - 1}`);
     }
 
     await device.queue.onSubmittedWorkDone();
-    console.log(`[CoordGen CPU] Coordinates generated successfully`);
+
+    // Check for errors during texture writing
+    const memError = await device.popErrorScope();
+    if (memError) {
+      throw new Error(`GPU out-of-memory writing coordinate texture: ${memError.message}`);
+    }
+    const valError = await device.popErrorScope();
+    if (valError) {
+      throw new Error(`GPU validation error writing coordinate texture: ${valError.message}`);
+    }
 
     return texture;
   }
