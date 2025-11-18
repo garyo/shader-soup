@@ -241,7 +241,7 @@ CRITICAL REQUIREMENTS:
   - Add noise functions: Use perlinNoise2, fbmPerlin, cellularNoise, turbulence, domainWarp, etc.
   - Vary code structure: swap statement orders, add or delete statements or loops or conditionals
   - Write new functions and use them
-  - Think about new math operations (abs, mod)
+  - Think about new math operations (abs, modf, ceil/floor, dot, cross, fract, min, max)
   - Think about symmetry vs. asymmetry: mirror, kaleidoscope, shapes (triangle/square/hex/circles)
   - Add functions for rotation and other creative coordinate transformations when you feel like it
   - Don't be afraid to add new functions and use them!

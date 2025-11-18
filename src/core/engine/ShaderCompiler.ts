@@ -156,10 +156,10 @@ export class ShaderCompiler {
    */
   public parseShaderMetadata(source: string): {
     entryPoints: string[];
-    bindings: Array<{ group: number; binding: number; type: string; name: string }>;
+    bindings: Array<{ group: number; binding: number; type: string; storageModifier?: string; name: string }>;
   } {
     const entryPoints: string[] = [];
-    const bindings: Array<{ group: number; binding: number; type: string; name: string }> = [];
+    const bindings: Array<{ group: number; binding: number; type: string; storageModifier?: string; name: string }> = [];
 
     // Find entry points (@compute, @vertex, @fragment)
     const entryPointRegex = /@(compute|vertex|fragment)\s+fn\s+(\w+)/g;
@@ -170,14 +170,18 @@ export class ShaderCompiler {
     }
 
     // Find bindings (@group, @binding)
-    // Updated regex to capture variable name and more type info
-    const bindingRegex = /@group\((\d+)\)\s+@binding\((\d+)\)\s+var(?:<([^>]+)>)?\s+(\w+)/g;
+    // Regex captures: group, binding, optional storage modifier, var name, and type after colon
+    const bindingRegex = /@group\((\d+)\)\s+@binding\((\d+)\)\s+var(?:<([^>]+)>)?\s+(\w+)\s*:\s*([^;]+)/g;
 
     while ((match = bindingRegex.exec(source)) !== null) {
+      const storageModifier = match[3]?.trim(); // e.g., "storage", "uniform"
+      const varType = match[5].trim(); // e.g., "texture_2d<f32>", "sampler", "array<vec4<f32>>"
+
       bindings.push({
         group: parseInt(match[1], 10),
         binding: parseInt(match[2], 10),
-        type: match[3] || 'unknown',
+        type: varType,
+        storageModifier: storageModifier,
         name: match[4],
       });
     }
@@ -186,7 +190,117 @@ export class ShaderCompiler {
   }
 
   /**
-   * Validate shader bindings against the standard layout
+   * Validate shader by attempting to create a GPU pipeline
+   * This uses actual GPU validation instead of regex parsing
+   * Returns validation errors if pipeline creation fails
+   */
+  public async validatePipeline(
+    module: GPUShaderModule,
+    hasParams: boolean = false,
+    hasInputTexture: boolean = false
+  ): Promise<string[]> {
+    const device = this.context.getDevice();
+    const errors: string[] = [];
+
+    try {
+      // Create bind group layout matching our standard layout
+      const layoutEntries: GPUBindGroupLayoutEntry[] = [
+        // Binding 0: Coordinate texture
+        {
+          binding: 0,
+          visibility: GPUShaderStage.COMPUTE,
+          texture: {
+            sampleType: 'float',
+            viewDimension: '2d',
+          },
+        },
+        // Binding 1: Coordinate sampler
+        {
+          binding: 1,
+          visibility: GPUShaderStage.COMPUTE,
+          sampler: {
+            type: 'filtering',
+          },
+        },
+        // Binding 2: Output buffer
+        {
+          binding: 2,
+          visibility: GPUShaderStage.COMPUTE,
+          buffer: {
+            type: 'storage',
+          },
+        },
+        // Binding 3: Dimensions
+        {
+          binding: 3,
+          visibility: GPUShaderStage.COMPUTE,
+          buffer: {
+            type: 'uniform',
+          },
+        },
+      ];
+
+      if (hasParams) {
+        layoutEntries.push({
+          binding: 4,
+          visibility: GPUShaderStage.COMPUTE,
+          buffer: {
+            type: 'uniform',
+          },
+        });
+      }
+
+      if (hasInputTexture) {
+        layoutEntries.push({
+          binding: 5,
+          visibility: GPUShaderStage.COMPUTE,
+          texture: {
+            sampleType: 'unfilterable-float',
+            viewDimension: '2d',
+          },
+        });
+        layoutEntries.push({
+          binding: 6,
+          visibility: GPUShaderStage.COMPUTE,
+          sampler: {
+            type: 'non-filtering',
+          },
+        });
+      }
+
+      const bindGroupLayout = device.createBindGroupLayout({
+        label: 'validation-layout',
+        entries: layoutEntries,
+      });
+
+      const pipelineLayout = device.createPipelineLayout({
+        label: 'validation-pipeline-layout',
+        bindGroupLayouts: [bindGroupLayout],
+      });
+
+      // Try to create the pipeline - this will throw if bindings don't match
+      device.createComputePipeline({
+        label: 'validation-pipeline',
+        layout: pipelineLayout,
+        compute: {
+          module: module,
+          entryPoint: 'main',
+        },
+      });
+
+      // If we get here, validation passed!
+      return [];
+    } catch (error) {
+      // GPU validation failed - extract error message
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      errors.push(errorMessage);
+      return errors;
+    }
+  }
+
+  /**
+   * OLD: Validate shader bindings against the standard layout (regex-based)
+   * This is now deprecated in favor of validatePipeline()
    * Returns validation errors if bindings don't match expected layout
    */
   public validateBindings(source: string, hasParams: boolean = false, hasInputTexture: boolean = false): string[] {
@@ -217,15 +331,24 @@ export class ShaderCompiler {
       if (!actualBinding) {
         errors.push(`Missing required binding @group(0) @binding(${expected.binding}): ${expected.description} (should be 'var<${expected.expectedType.includes('texture') || expected.expectedType === 'sampler' ? '' : expected.expectedType}> ${expected.expectedName}: ${expected.expectedType}')`);
       } else {
-        // Check type matches (simple check - could be more sophisticated)
-        const typeMatches =
-          actualBinding.type.includes('texture_2d') && expected.expectedType.includes('texture_2d') ||
-          actualBinding.type === 'sampler' && expected.expectedType === 'sampler' ||
-          actualBinding.type.includes('storage') && expected.expectedType === 'storage' ||
-          actualBinding.type.includes('uniform') && expected.expectedType === 'uniform';
+        // Check type/storage modifier matches
+        let typeMatches = false;
+
+        if (expected.expectedType === 'storage' || expected.expectedType === 'uniform') {
+          // For storage/uniform, check the storage modifier
+          typeMatches = actualBinding.storageModifier === expected.expectedType;
+        } else {
+          // For textures/samplers, check the variable type
+          typeMatches =
+            (actualBinding.type.includes('texture_2d') && expected.expectedType.includes('texture_2d')) ||
+            (actualBinding.type === 'sampler' && expected.expectedType === 'sampler');
+        }
 
         if (!typeMatches) {
-          errors.push(`Binding ${expected.binding} has wrong type: found '${actualBinding.type}', expected '${expected.expectedType}'`);
+          const actualValue = (expected.expectedType === 'storage' || expected.expectedType === 'uniform')
+            ? (actualBinding.storageModifier || 'none')
+            : actualBinding.type;
+          errors.push(`Binding ${expected.binding} has wrong type: found '${actualValue}', expected '${expected.expectedType}'`);
         }
       }
     }

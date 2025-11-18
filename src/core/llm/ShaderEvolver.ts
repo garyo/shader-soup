@@ -164,6 +164,7 @@ export class ShaderEvolver {
 
   /**
    * Evolve mashup shaders - combine multiple shaders into new variations
+   * Uses parallel batch calls for better performance
    */
   public async evolveMashup(
     parentShaders: ShaderDefinition[],
@@ -178,20 +179,33 @@ export class ShaderEvolver {
     const effectiveTemp = temperature ?? this.temperature;
 
     try {
-      console.log(`Generating ${count} mashup variations from ${parentShaders.length} parents`);
+      // Calculate number of parallel batches needed
+      const numBatches = Math.ceil(count / this.batchSize);
+      console.log(`Generating ${count} mashup variations from ${parentShaders.length} parents in ${numBatches} parallel batches of ${this.batchSize}`);
 
-      // Create mashup prompt
-      const promptParams: MashupPromptParams = {
-        shaders: parentShaders.map(shader => ({
-          name: shader.name,
-          source: shader.source,
-        })),
-        count,
-        temperature: effectiveTemp,
-      };
+      // Create array of batch promises
+      const batchPromises: Promise<Array<{ name?: string; shader: string; changelog?: string }>>[] = [];
+      for (let batchIndex = 0; batchIndex < numBatches; batchIndex++) {
+        const isLastBatch = batchIndex === numBatches - 1;
+        const batchCount = isLastBatch ? count - (batchIndex * this.batchSize) : this.batchSize;
 
-      // Generate mashup shaders
-      const mashupShaders = await this.batchMashupShader(promptParams);
+        const promptParams: MashupPromptParams = {
+          shaders: parentShaders.map(shader => ({
+            name: shader.name,
+            source: shader.source,
+          })),
+          count: batchCount,
+          temperature: effectiveTemp,
+        };
+
+        batchPromises.push(this.batchMashupShader(promptParams));
+      }
+
+      // Execute all batches in parallel
+      const batchResults = await Promise.all(batchPromises);
+
+      // Flatten results from all batches
+      const mashupShaders: Array<{ name?: string; shader: string; changelog?: string }> = batchResults.flat();
 
       const results: EvolutionResult[] = [];
 
@@ -433,14 +447,14 @@ export class ShaderEvolver {
         continue;
       }
 
-      // Compilation succeeded - now validate bindings
+      // Compilation succeeded - now validate by creating a GPU pipeline
       // Detect if shader has parameters by checking for Params struct
       const hasParams = currentSource.includes('struct Params');
       const hasInputTexture = currentSource.includes('prevFrame');
 
-      const bindingErrors = this.compiler.validateBindings(currentSource, hasParams, hasInputTexture);
+      const pipelineErrors = await this.compiler.validatePipeline(result.module!, hasParams, hasInputTexture);
 
-      if (bindingErrors.length === 0) {
+      if (pipelineErrors.length === 0) {
         // All validation passed!
         return {
           success: true,
@@ -449,10 +463,10 @@ export class ShaderEvolver {
         };
       }
 
-      // Binding validation failed - ask LLM to fix
+      // Pipeline validation failed - ask LLM to fix
       if (attempts < this.maxDebugAttempts) {
-        const errorMessage = `Binding validation errors:\n${bindingErrors.join('\n')}`;
-        console.log(`Shader has binding errors on attempt ${attempts}; errs=${errorMessage}. Asking LLM to debug`);
+        const errorMessage = `GPU validation errors:\n${pipelineErrors.join('\n')}`;
+        console.log(`Shader has GPU validation errors on attempt ${attempts}; errs=${errorMessage}. Asking LLM to debug`);
 
         currentSource = await this.requestLLMFix(currentSource, errorMessage, attempts);
       }
