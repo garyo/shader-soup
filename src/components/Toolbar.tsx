@@ -28,7 +28,7 @@ export const Toolbar: Component<ToolbarProps> = (props) => {
           min="0"
           max="1"
           step="0.05"
-          value={props.temperature}
+          prop:value={props.temperature}
           onInput={handleSliderChange}
         />
         <div class="toolbar-hint">

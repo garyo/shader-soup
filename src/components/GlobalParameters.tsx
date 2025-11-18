@@ -4,10 +4,10 @@
 
 import { type Component, For } from 'solid-js';
 import { Slider } from './Slider';
-import type { GlobalParameters } from '@/stores/shaderStore';
+import { shaderStore, type GlobalParameters } from '@/stores/shaderStore';
 
 interface GlobalParametersProps {
-  parameters: GlobalParameters;
+  shaderId: string;
   onChange: (paramName: keyof GlobalParameters, value: number) => void;
   onReset: () => void;
 }
@@ -32,17 +32,22 @@ export const GlobalParametersComponent: Component<GlobalParametersProps> = (prop
   return (
     <div class="global-parameters-content">
       <For each={parameterDefs}>
-        {(def) => (
-          <Slider
-            name={def.label}
-            value={props.parameters[def.name]}
-            min={def.min}
-            max={def.max}
-            step={def.step}
-            scale={def.scale}
-            onChange={(value) => props.onChange(def.name, value)}
-          />
-        )}
+        {(def) => {
+          // Access individual parameter reactively from store
+          const getValue = () => shaderStore.getGlobalParameter(props.shaderId, def.name);
+
+          return (
+            <Slider
+              name={def.label}
+              value={getValue()}
+              min={def.min}
+              max={def.max}
+              step={def.step}
+              scale={def.scale}
+              onChange={(value) => props.onChange(def.name, value)}
+            />
+          );
+        }}
       </For>
 
       <button onClick={props.onReset} class="global-parameters-reset">

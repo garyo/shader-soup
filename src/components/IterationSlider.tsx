@@ -31,7 +31,7 @@ export const IterationSlider: Component<IterationSliderProps> = (props) => {
         min={1}
         max={50}
         step={1}
-        value={localValue()}
+        prop:value={localValue()}
         onInput={handleChange}
         class="slider"
       />

@@ -156,10 +156,10 @@ export class ShaderCompiler {
    */
   public parseShaderMetadata(source: string): {
     entryPoints: string[];
-    bindings: Array<{ group: number; binding: number; type: string }>;
+    bindings: Array<{ group: number; binding: number; type: string; name: string }>;
   } {
     const entryPoints: string[] = [];
-    const bindings: Array<{ group: number; binding: number; type: string }> = [];
+    const bindings: Array<{ group: number; binding: number; type: string; name: string }> = [];
 
     // Find entry points (@compute, @vertex, @fragment)
     const entryPointRegex = /@(compute|vertex|fragment)\s+fn\s+(\w+)/g;
@@ -170,17 +170,79 @@ export class ShaderCompiler {
     }
 
     // Find bindings (@group, @binding)
-    const bindingRegex = /@group\((\d+)\)\s+@binding\((\d+)\)\s+var(?:<(\w+)>)?/g;
+    // Updated regex to capture variable name and more type info
+    const bindingRegex = /@group\((\d+)\)\s+@binding\((\d+)\)\s+var(?:<([^>]+)>)?\s+(\w+)/g;
 
     while ((match = bindingRegex.exec(source)) !== null) {
       bindings.push({
         group: parseInt(match[1], 10),
         binding: parseInt(match[2], 10),
         type: match[3] || 'unknown',
+        name: match[4],
       });
     }
 
     return { entryPoints, bindings };
+  }
+
+  /**
+   * Validate shader bindings against the standard layout
+   * Returns validation errors if bindings don't match expected layout
+   */
+  public validateBindings(source: string, hasParams: boolean = false, hasInputTexture: boolean = false): string[] {
+    const { bindings } = this.parseShaderMetadata(source);
+    const errors: string[] = [];
+
+    // Expected bindings based on standard layout
+    const expectedBindings = [
+      { binding: 0, expectedType: 'texture_2d<f32>', expectedName: 'coordTexture', description: 'coordinate texture' },
+      { binding: 1, expectedType: 'sampler', expectedName: 'coordSampler', description: 'coordinate sampler' },
+      { binding: 2, expectedType: 'storage', expectedName: 'output', description: 'output buffer' },
+      { binding: 3, expectedType: 'uniform', expectedName: 'dimensions', description: 'dimensions uniform' },
+    ];
+
+    if (hasParams) {
+      expectedBindings.push({ binding: 4, expectedType: 'uniform', expectedName: 'params', description: 'parameters uniform' });
+    }
+
+    if (hasInputTexture) {
+      expectedBindings.push({ binding: 5, expectedType: 'texture_2d<f32>', expectedName: 'prevFrame', description: 'input texture' });
+      expectedBindings.push({ binding: 6, expectedType: 'sampler', expectedName: 'prevFrameSampler', description: 'input sampler' });
+    }
+
+    // Check that all required bindings are present
+    for (const expected of expectedBindings) {
+      const actualBinding = bindings.find(b => b.group === 0 && b.binding === expected.binding);
+
+      if (!actualBinding) {
+        errors.push(`Missing required binding @group(0) @binding(${expected.binding}): ${expected.description} (should be 'var<${expected.expectedType.includes('texture') || expected.expectedType === 'sampler' ? '' : expected.expectedType}> ${expected.expectedName}: ${expected.expectedType}')`);
+      } else {
+        // Check type matches (simple check - could be more sophisticated)
+        const typeMatches =
+          actualBinding.type.includes('texture_2d') && expected.expectedType.includes('texture_2d') ||
+          actualBinding.type === 'sampler' && expected.expectedType === 'sampler' ||
+          actualBinding.type.includes('storage') && expected.expectedType === 'storage' ||
+          actualBinding.type.includes('uniform') && expected.expectedType === 'uniform';
+
+        if (!typeMatches) {
+          errors.push(`Binding ${expected.binding} has wrong type: found '${actualBinding.type}', expected '${expected.expectedType}'`);
+        }
+      }
+    }
+
+    // Check for unexpected bindings in group 0
+    for (const binding of bindings) {
+      if (binding.group === 0) {
+        const isExpected = expectedBindings.some(exp => exp.binding === binding.binding);
+        if (!isExpected) {
+          errors.push(`Unexpected binding @group(0) @binding(${binding.binding}): '${binding.name}'. Only bindings 0-${expectedBindings.length - 1} are allowed.`);
+        }
+      } else {
+        errors.push(`Shader uses @group(${binding.group}) but only @group(0) is supported`);
+      }
+    }
+
+    return errors;
   }
 
   /**

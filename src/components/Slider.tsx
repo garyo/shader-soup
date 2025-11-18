@@ -3,7 +3,7 @@
  * Supports both linear and logarithmic scaling
  */
 
-import { type Component, createSignal, createEffect } from 'solid-js';
+import { type Component, createSignal, createEffect, createMemo } from 'solid-js';
 
 export interface SliderProps {
   name: string;
@@ -60,7 +60,11 @@ export const Slider: Component<SliderProps> = (props) => {
   const sliderMin = scale === 'log' ? 0 : props.min;
   const sliderMax = scale === 'log' ? 1 : props.max;
   const sliderStep = scale === 'log' ? 0.001 : props.step;
-  const sliderValue = scale === 'log' ? valueToSliderPosition(localValue()) : localValue();
+
+  // Make sliderValue reactive so it recomputes when localValue changes
+  const sliderValue = createMemo(() => {
+    return scale === 'log' ? valueToSliderPosition(localValue()) : localValue();
+  });
 
   return (
     <div class="parameter-slider">
@@ -70,7 +74,7 @@ export const Slider: Component<SliderProps> = (props) => {
         min={sliderMin}
         max={sliderMax}
         step={sliderStep}
-        value={sliderValue}
+        prop:value={sliderValue()}
         onInput={handleChange}
         class="slider"
       />

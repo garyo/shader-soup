@@ -7,6 +7,13 @@ import type { ShaderDefinition, ShaderParameter } from '@/types/core';
 
 const STORAGE_KEY = 'evolve-image-gen-promoted-shaders';
 
+interface StoredShader {
+  shader: ShaderDefinition;
+  parameterValues?: Record<string, number>;
+  iterationValue?: number;
+  globalParameters?: GlobalParameters;
+}
+
 export interface GlobalParameters {
   gamma: number;      // 0.1 to 10, default 1 (higher brightens midtones)
   contrast: number;   // -1 to 1, default 0
@@ -28,7 +35,7 @@ interface ShaderState {
   activeShaders: Set<string>;
   parameterValues: Map<string, Map<string, number>>; // shaderId -> paramName -> value
   iterationValues: Map<string, number>; // shaderId -> iteration count
-  globalParameters: Map<string, GlobalParameters>; // shaderId -> global parameters
+  globalParameters: Map<string, Map<string, number>>; // shaderId -> paramName -> value (changed to nested Map for reactivity)
   selectedShaderId: string | null;
   promotedShaderIds: Set<string>; // Track which shaders are promoted (saved to localStorage)
   selectedForMashup: Set<string>; // Track shaders selected for mashup
@@ -52,31 +59,59 @@ function savePromotedShadersToStorage() {
       state.promotedShaderIds.has(shader.id)
     );
 
-    // Convert to plain objects for JSON serialization
-    const serialized = promotedShaders.map((shader) => ({
-      ...shader,
-      createdAt: shader.createdAt.toISOString(),
-      modifiedAt: shader.modifiedAt.toISOString(),
-    }));
+    // Create StoredShader objects with all associated data
+    const storedShaders: StoredShader[] = promotedShaders.map((shader) => {
+      const stored: StoredShader = {
+        shader: {
+          ...shader,
+          createdAt: shader.createdAt.toISOString() as any,
+          modifiedAt: shader.modifiedAt.toISOString() as any,
+        },
+      };
 
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(serialized));
+      // Add parameter values if they exist
+      const params = state.parameterValues.get(shader.id);
+      if (params && params.size > 0) {
+        stored.parameterValues = Object.fromEntries(params);
+      }
+
+      // Add iteration value if it exists
+      const iterations = state.iterationValues.get(shader.id);
+      if (iterations !== undefined) {
+        stored.iterationValue = iterations;
+      }
+
+      // Add global parameters if they exist
+      const globalParams = state.globalParameters.get(shader.id);
+      if (globalParams) {
+        stored.globalParameters = Object.fromEntries(globalParams) as any;
+      }
+
+      return stored;
+    });
+
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(storedShaders));
   } catch (error) {
     console.error('Failed to save promoted shaders to localStorage:', error);
   }
 }
 
-function loadPromotedShadersFromStorage(): ShaderDefinition[] {
+function loadPromotedShadersFromStorage(): StoredShader[] {
   try {
     const stored = localStorage.getItem(STORAGE_KEY);
     if (!stored) return [];
 
     const parsed = JSON.parse(stored);
 
-    // Convert date strings back to Date objects
-    return parsed.map((shader: any) => ({
-      ...shader,
-      createdAt: new Date(shader.createdAt),
-      modifiedAt: new Date(shader.modifiedAt),
+    return parsed.map((stored: any) => ({
+      shader: {
+        ...stored.shader,
+        createdAt: new Date(stored.shader.createdAt),
+        modifiedAt: new Date(stored.shader.modifiedAt),
+      },
+      parameterValues: stored.parameterValues,
+      iterationValue: stored.iterationValue,
+      globalParameters: stored.globalParameters,
     }));
   } catch (error) {
     console.error('Failed to load promoted shaders from localStorage:', error);
@@ -123,6 +158,19 @@ export const shaderStore = {
       return newValues;
     });
 
+    // Initialize global parameters with defaults
+    setState('globalParameters', (params) => {
+      const newParams = new Map(params);
+      const globalParamMap = new Map<string, number>();
+      globalParamMap.set('gamma', defaultGlobalParameters.gamma);
+      globalParamMap.set('contrast', defaultGlobalParameters.contrast);
+      globalParamMap.set('zoom', defaultGlobalParameters.zoom);
+      globalParamMap.set('panX', defaultGlobalParameters.panX);
+      globalParamMap.set('panY', defaultGlobalParameters.panY);
+      newParams.set(shader.id, globalParamMap);
+      return newParams;
+    });
+
     // Activate shader by default
     setState('activeShaders', (active) => {
       const newActive = new Set(active);
@@ -151,6 +199,18 @@ export const shaderStore = {
       const newValues = new Map(values);
       newValues.delete(id);
       return newValues;
+    });
+
+    setState('iterationValues', (values) => {
+      const newValues = new Map(values);
+      newValues.delete(id);
+      return newValues;
+    });
+
+    setState('globalParameters', (params) => {
+      const newParams = new Map(params);
+      newParams.delete(id);
+      return newParams;
     });
 
     if (state.selectedShaderId === id) {
@@ -208,6 +268,11 @@ export const shaderStore = {
 
       return newValues;
     });
+
+    // Save to localStorage if this is a promoted shader
+    if (state.promotedShaderIds.has(shaderId)) {
+      savePromotedShadersToStorage();
+    }
   },
 
   /**
@@ -226,6 +291,11 @@ export const shaderStore = {
       newValues.set(shaderId, value);
       return newValues;
     });
+
+    // Save to localStorage if this is a promoted shader
+    if (state.promotedShaderIds.has(shaderId)) {
+      savePromotedShadersToStorage();
+    }
   },
 
   /**
@@ -325,9 +395,11 @@ export const shaderStore = {
    * Load promoted shaders from localStorage
    */
   loadPromotedShaders() {
-    const promotedShaders = loadPromotedShadersFromStorage();
+    const storedShaders = loadPromotedShadersFromStorage();
 
-    for (const shader of promotedShaders) {
+    for (const stored of storedShaders) {
+      const { shader, parameterValues, iterationValue, globalParameters } = stored;
+
       // Add shader
       this.addShader(shader);
 
@@ -337,9 +409,38 @@ export const shaderStore = {
         newPromoted.add(shader.id);
         return newPromoted;
       });
+
+      // Restore parameter values if they exist
+      if (parameterValues) {
+        const paramMap = new Map(Object.entries(parameterValues));
+        setState('parameterValues', (values) => {
+          const newValues = new Map(values);
+          newValues.set(shader.id, paramMap);
+          return newValues;
+        });
+      }
+
+      // Restore iteration value if it exists
+      if (iterationValue !== undefined) {
+        setState('iterationValues', (values) => {
+          const newValues = new Map(values);
+          newValues.set(shader.id, iterationValue);
+          return newValues;
+        });
+      }
+
+      // Restore global parameters if they exist
+      if (globalParameters) {
+        setState('globalParameters', (params) => {
+          const newParams = new Map(params);
+          const globalParamMap = new Map(Object.entries(globalParameters));
+          newParams.set(shader.id, globalParamMap);
+          return newParams;
+        });
+      }
     }
 
-    return promotedShaders.length;
+    return storedShaders.length;
   },
 
   /**
@@ -413,7 +514,25 @@ export const shaderStore = {
    * Get global parameters for a shader
    */
   getGlobalParameters(shaderId: string): GlobalParameters {
-    return state.globalParameters.get(shaderId) || { ...defaultGlobalParameters };
+    const paramMap = state.globalParameters.get(shaderId);
+    if (paramMap) {
+      return {
+        gamma: paramMap.get('gamma') ?? defaultGlobalParameters.gamma,
+        contrast: paramMap.get('contrast') ?? defaultGlobalParameters.contrast,
+        zoom: paramMap.get('zoom') ?? defaultGlobalParameters.zoom,
+        panX: paramMap.get('panX') ?? defaultGlobalParameters.panX,
+        panY: paramMap.get('panY') ?? defaultGlobalParameters.panY,
+      };
+    }
+    return { ...defaultGlobalParameters };
+  },
+
+  /**
+   * Get a single global parameter value (reactive)
+   */
+  getGlobalParameter(shaderId: string, paramName: keyof GlobalParameters): number {
+    const params = state.globalParameters.get(shaderId);
+    return params ? (params.get(paramName) ?? defaultGlobalParameters[paramName]) : defaultGlobalParameters[paramName];
   },
 
   /**
@@ -426,10 +545,19 @@ export const shaderStore = {
   ) {
     setState('globalParameters', (params) => {
       const newParams = new Map(params);
-      const current = newParams.get(shaderId) || { ...defaultGlobalParameters };
-      newParams.set(shaderId, { ...current, [paramName]: value });
+      const current = newParams.get(shaderId);
+      if (current) {
+        const newParamMap = new Map(current);
+        newParamMap.set(paramName, value);
+        newParams.set(shaderId, newParamMap);
+      }
       return newParams;
     });
+
+    // Save to localStorage if this is a promoted shader
+    if (state.promotedShaderIds.has(shaderId)) {
+      savePromotedShadersToStorage();
+    }
   },
 
   /**
@@ -438,8 +566,19 @@ export const shaderStore = {
   resetGlobalParameters(shaderId: string) {
     setState('globalParameters', (params) => {
       const newParams = new Map(params);
-      newParams.set(shaderId, { ...defaultGlobalParameters });
+      const globalParamMap = new Map<string, number>();
+      globalParamMap.set('gamma', defaultGlobalParameters.gamma);
+      globalParamMap.set('contrast', defaultGlobalParameters.contrast);
+      globalParamMap.set('zoom', defaultGlobalParameters.zoom);
+      globalParamMap.set('panX', defaultGlobalParameters.panX);
+      globalParamMap.set('panY', defaultGlobalParameters.panY);
+      newParams.set(shaderId, globalParamMap);
       return newParams;
     });
+
+    // Save to localStorage if this is a promoted shader
+    if (state.promotedShaderIds.has(shaderId)) {
+      savePromotedShadersToStorage();
+    }
   },
 };

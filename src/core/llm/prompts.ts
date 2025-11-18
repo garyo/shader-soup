@@ -86,6 +86,7 @@ MASHUP GUIDELINES:
   * Combine color palettes: alternate bands, radial transitions, noise-based selection
 - Each variation should be VISUALLY and MATHEMATICALLY DISTINCT
 - Be creative in how you combine the parent shaders - don't just linearly interpolate!
+- Watch out for duplicate function definitions.
 
 TECHNICAL CONSTRAINTS:
 - You MUST preserve the structure in each mashup:

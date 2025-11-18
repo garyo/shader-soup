@@ -8,12 +8,13 @@ import { shaderStore } from '@/stores';
 interface MashupToolbarProps {
   onMashup: () => void;
   onClear: () => void;
+  isLoading: boolean;
 }
 
 export const MashupToolbar: Component<MashupToolbarProps> = (props) => {
   const selectedShaders = () => shaderStore.getMashupSelected();
   const selectionCount = () => shaderStore.getMashupSelectionCount();
-  const canMashup = () => selectionCount() >= 2;
+  const canMashup = () => selectionCount() >= 2 && !props.isLoading;
 
   return (
     <Show when={selectionCount() > 0}>
@@ -27,9 +28,16 @@ export const MashupToolbar: Component<MashupToolbarProps> = (props) => {
           </span>
         </div>
         <div class="mashup-toolbar-actions">
+          <Show when={props.isLoading}>
+            <div class="mashup-loading">
+              <div class="spinner"></div>
+              <span>Creating mashup...</span>
+            </div>
+          </Show>
           <button
             onClick={props.onClear}
             class="mashup-clear-button"
+            disabled={props.isLoading}
           >
             Clear
           </button>
@@ -37,9 +45,9 @@ export const MashupToolbar: Component<MashupToolbarProps> = (props) => {
             onClick={props.onMashup}
             class="mashup-create-button"
             disabled={!canMashup()}
-            title={canMashup() ? 'Create mashup variations' : 'Select at least 2 shaders'}
+            title={canMashup() ? 'Create mashup variations' : props.isLoading ? 'Mashup in progress...' : 'Select at least 2 shaders'}
           >
-            🎨 Create Mashup ({selectionCount() >= 2 ? '6 variants' : 'need 2+'})
+            {props.isLoading ? '⏳ Creating...' : `🎨 Create Mashup (${selectionCount() >= 2 ? '6 variants' : 'need 2+'})`}
           </button>
         </div>
       </div>

@@ -36,6 +36,7 @@ export const App: Component = () => {
   const [temperature, setTemperature] = createSignal(0.9); // Default evolution temperature
   const [logs, setLogs] = createSignal<LogEntry[]>([]);
   const [logOverlayOpen, setLogOverlayOpen] = createSignal(false);
+  const [mashupInProgress, setMashupInProgress] = createSignal(false);
 
   const maxLogEntries = 32;
   // Add log entry to the overlay (at the end of the list)
@@ -819,6 +820,7 @@ export const App: Component = () => {
     const currentTemp = temperature(); // Use current temperature
     const parentNames = selectedShaders.map(s => s.name);
 
+    setMashupInProgress(true);
     addLog(`Starting mashup of ${selectedShaders.length} shaders: ${parentNames.join(', ')} (temp: ${currentTemp.toFixed(2)}, variants: ${mashupCount})`);
 
     try {
@@ -855,10 +857,20 @@ export const App: Component = () => {
       );
 
       addLog(`Mashup complete: ${results.filter(r => r.success).length}/${mashupCount} succeeded`, 'success');
+
+      // Scroll to mashup results
+      setTimeout(() => {
+        const mashupSection = document.querySelector('.mashup-results');
+        if (mashupSection) {
+          mashupSection.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        }
+      }, 100);
     } catch (error) {
       const errorMsg = error instanceof Error ? error.message : 'Unknown mashup error';
       addLog(`Mashup failed: ${errorMsg}`, 'error');
       console.error('Mashup error:', error);
+    } finally {
+      setMashupInProgress(false);
     }
   };
 
@@ -942,6 +954,7 @@ export const App: Component = () => {
       <MashupToolbar
         onMashup={handleMashup}
         onClear={handleClearMashupSelection}
+        isLoading={mashupInProgress()}
       />
 
       <LogOverlay

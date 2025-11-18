@@ -47,7 +47,6 @@ export const ShaderCard: Component<ShaderCardProps> = (props) => {
   });
 
   const paramValues = () => shaderStore.getParameterValues(props.shader.id) || new Map();
-  const globalParams = () => shaderStore.getGlobalParameters(props.shader.id);
   const evolutionProgress = () => evolutionStore.getProgress(props.shader.id);
   const children = () => evolutionStore.getChildren(props.shader.id);
   const isEvolving = () => evolutionStore.isEvolving(props.shader.id);
@@ -145,7 +144,7 @@ export const ShaderCard: Component<ShaderCardProps> = (props) => {
             label: 'Global',
             content: (
               <GlobalParametersComponent
-                parameters={globalParams()}
+                shaderId={props.shader.id}
                 onChange={props.onGlobalParameterChange}
                 onReset={props.onGlobalParametersReset}
               />

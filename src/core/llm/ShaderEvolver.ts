@@ -408,6 +408,7 @@ export class ShaderEvolver {
 
   /**
    * Debug shader with compilation feedback loop
+   * Now includes binding validation to catch runtime errors
    */
   private async debugShader(
     shaderSource: string
@@ -421,7 +422,26 @@ export class ShaderEvolver {
       // Try to compile
       const result = await this.compiler.compile(currentSource, `debug-attempt-${attempts}`);
 
-      if (result.success) {
+      if (!result.success) {
+        // Compilation failed - ask LLM to fix
+        if (attempts < this.maxDebugAttempts) {
+          const errorMessage = ShaderCompiler.formatErrors(result.errors);
+          console.log(`Shader failed to compile on attempt ${attempts}; errs=${errorMessage}. Asking LLM to debug`)
+
+          currentSource = await this.requestLLMFix(currentSource, errorMessage, attempts);
+        }
+        continue;
+      }
+
+      // Compilation succeeded - now validate bindings
+      // Detect if shader has parameters by checking for Params struct
+      const hasParams = currentSource.includes('struct Params');
+      const hasInputTexture = currentSource.includes('prevFrame');
+
+      const bindingErrors = this.compiler.validateBindings(currentSource, hasParams, hasInputTexture);
+
+      if (bindingErrors.length === 0) {
+        // All validation passed!
         return {
           success: true,
           source: currentSource,
@@ -429,72 +449,12 @@ export class ShaderEvolver {
         };
       }
 
-      // If failed and not last attempt, ask LLM to fix
+      // Binding validation failed - ask LLM to fix
       if (attempts < this.maxDebugAttempts) {
-        const errorMessage = ShaderCompiler.formatErrors(result.errors);
-        console.log(`Shader failed to compile on attempt ${attempts}; errs=${errorMessage}. Asking LLM to debug`)
+        const errorMessage = `Binding validation errors:\n${bindingErrors.join('\n')}`;
+        console.log(`Shader has binding errors on attempt ${attempts}; errs=${errorMessage}. Asking LLM to debug`);
 
-        const promptParams: DebugPromptParams = {
-          shaderSource: currentSource,
-          errors: errorMessage,
-          attempt: attempts,
-        };
-
-        const prompt = createDebugPrompt(promptParams);
-        console.log(`Debug attempt ${attempts}, asking LLM to fix errors`);
-
-        // Create messages array for conversation
-        const messages: Anthropic.MessageParam[] = [
-          {
-            role: 'user',
-            content: prompt,
-          },
-        ];
-
-        // Loop to handle tool calls
-        while (true) {
-          const startTime = performance.now();
-          const message = await this.anthropic.messages.create({
-            model: this.model,
-            max_tokens: 8192,
-            temperature: 0.3, // Lower temperature for debugging
-            tools: [debugShaderTool],
-            tool_choice: { type: "tool", name: "debug_shader_output" },
-            messages,
-          });
-          const elapsed = performance.now() - startTime;
-
-          // Log timing and token usage
-          console.log(`[LLM] Debug shader call (attempt ${attempts}):`, {
-            model: this.model,
-            temperature: 0.3,
-            elapsed_ms: elapsed.toFixed(0),
-            input_tokens: message.usage.input_tokens,
-            output_tokens: message.usage.output_tokens,
-            total_tokens: message.usage.input_tokens + message.usage.output_tokens,
-            stop_reason: message.stop_reason,
-          });
-
-          console.log(`Debug: got response with stop_reason: ${message.stop_reason}`);
-
-          // Check if the model used the tool
-          if (message.stop_reason === 'tool_use') {
-            const toolUse = message.content.find(
-              (block): block is Anthropic.ToolUseBlock =>
-                block.type === 'tool_use' && block.name === 'debug_shader_output'
-            );
-
-            if (toolUse) {
-              console.log(`Debug: tool used successfully, extracting fixed shader`);
-              const input = toolUse.input as { shader: string };
-              currentSource = input.shader;
-              break;
-            }
-          }
-
-          // If we get here without finding the tool use, something went wrong
-          throw new Error(`Debug: unexpected stop reason: ${message.stop_reason}`);
-        }
+        currentSource = await this.requestLLMFix(currentSource, errorMessage, attempts);
       }
     }
 
@@ -504,6 +464,76 @@ export class ShaderEvolver {
       source: currentSource,
       attempts,
     };
+  }
+
+  /**
+   * Request LLM to fix shader errors (compilation or binding validation)
+   */
+  private async requestLLMFix(
+    shaderSource: string,
+    errorMessage: string,
+    attempt: number
+  ): Promise<string> {
+    const promptParams: DebugPromptParams = {
+      shaderSource,
+      errors: errorMessage,
+      attempt,
+    };
+
+    const prompt = createDebugPrompt(promptParams);
+    console.log(`Debug attempt ${attempt}, asking LLM to fix errors`);
+
+    // Create messages array for conversation
+    const messages: Anthropic.MessageParam[] = [
+      {
+        role: 'user',
+        content: prompt,
+      },
+    ];
+
+    // Loop to handle tool calls
+    while (true) {
+      const startTime = performance.now();
+      const message = await this.anthropic.messages.create({
+        model: this.model,
+        max_tokens: 8192,
+        temperature: 0.3, // Lower temperature for debugging
+        tools: [debugShaderTool],
+        tool_choice: { type: "tool", name: "debug_shader_output" },
+        messages,
+      });
+      const elapsed = performance.now() - startTime;
+
+      // Log timing and token usage
+      console.log(`[LLM] Debug shader call (attempt ${attempt}):`, {
+        model: this.model,
+        temperature: 0.3,
+        elapsed_ms: elapsed.toFixed(0),
+        input_tokens: message.usage.input_tokens,
+        output_tokens: message.usage.output_tokens,
+        total_tokens: message.usage.input_tokens + message.usage.output_tokens,
+        stop_reason: message.stop_reason,
+      });
+
+      console.log(`Debug: got response with stop_reason: ${message.stop_reason}`);
+
+      // Check if the model used the tool
+      if (message.stop_reason === 'tool_use') {
+        const toolUse = message.content.find(
+          (block): block is Anthropic.ToolUseBlock =>
+            block.type === 'tool_use' && block.name === 'debug_shader_output'
+        );
+
+        if (toolUse) {
+          console.log(`Debug: tool used successfully, extracting fixed shader`);
+          const input = toolUse.input as { shader: string };
+          return input.shader;
+        }
+      }
+
+      // If we get here without finding the tool use, something went wrong
+      throw new Error(`Debug: unexpected stop reason: ${message.stop_reason}`);
+    }
   }
 
   /**
