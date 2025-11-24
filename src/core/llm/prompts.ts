@@ -42,12 +42,12 @@ export function createMashupPrompt(params: MashupPromptParams): string {
     .map((shader, index) => `SHADER ${index + 1}: "${shader.name}"\n\`\`\`wgsl\n${shader.source}\n\`\`\``)
     .join('\n\n');
 
-  return `You are a highly creative WebGPU shader developer. Your task is to create ${params.count} new shaders by creatively, randomly combining and mashing up techniques from these ${params.shaders.length} shaders:
+  return `You are a highly creative WebGPU shader developer. Your task is to create ${params.count} new shaders by creatively, randomly inventing, combining and mashing up techniques from these ${params.shaders.length} shaders:
 
 ${shaderList}
 
 AVAILABLE NOISE LIBRARY:
-All shaders have access to a comprehensive noise library that is automatically included. You can use any of these functions:
+All shaders have access to a comprehensive noise library that is automatically included. You can use any of these functions (or write your own):
 
 Hash Functions:
 - pcg(n: u32) -> u32
@@ -70,11 +70,20 @@ Special Patterns:
 - ridgeNoise(p: vec2f, octaves: i32) -> f32 - Inverted ridges for mountain-like patterns
 - domainWarp(p: vec2f, amount: f32) -> vec2f - Distort coordinate space with noise
 
+EXPERIMENTATION WORKFLOW:
+- You have access to a render_shader tool that lets you SEE what your mashup looks like!
+- Use this to try different combination strategies before committing
+- You can render up to 3 test shaders to explore the creative space
+- Experiment boldly - you can iterate until you find something visually interesting
+- Once you've found ${params.count} compelling mashups through experimentation, output them with shader_output
+
 MASHUP GUIDELINES:
 - Generate EXACTLY ${params.count} mashup variations
 - Use a temperature of ${params.temperature} (0 = conservative, 1 = very creative)
 - Each mashup should COMBINE techniques from the parent shaders in interesting ways, and add or change elements
 - Think about how to blend visual elements: layering, modulation, conditional mixing, spatial transitions
+- Don't repeat yourself; always try something different from previous attempts
+- Look at the previous prompt's images and try to branch out; the higher the temperature, the more you should vary the result
 - Think about how to blend mathematical techniques even when you can't predict the visual outcomes
 - Examples of mashup techniques:
   * Use the pattern generation from one shader but color scheme from another
@@ -104,6 +113,7 @@ TECHNICAL CONSTRAINTS:
   * You may add, remove, or modify @param comments, keeping the same format
 - Each shader must compile and produce visual output
 - Each mashup should be SYNTACTICALLY CORRECT to your best approximation (a debugger will run after this)
+- Note: the modulus (mod) operator in WGSL is "fmod", not "mod"
 
 OUTPUT FORMAT:
 Use the shader_output tool to return your ${params.count} mashup variations.
@@ -133,7 +143,7 @@ ${params.shaderSource}
 \`\`\`
 
 AVAILABLE NOISE LIBRARY:
-All shaders have access to a comprehensive noise library that is automatically included. You can use any of these functions:
+All shaders have access to a comprehensive noise library that is automatically included. You can use any of these functions, and you can write your own:
 
 Hash Functions:
 - pcg(n: u32) -> u32
@@ -160,6 +170,7 @@ MUTATION GUIDELINES:
 - Make ${changeCount} DISTINCT creative changes to the shader logic
 - Creativity level: ${creativityLevel}
 - Each mutation should produce VISUALLY DIFFERENT results
+- Don't repeat yourself; always try something different from previous attempts
 - Ideas: change color calculations, add new mathematical functions (sin, cos, abs, fract, mix), alter patterns, combine operations differently, use different coordinate transformations
 - USE THE NOISE LIBRARY: Incorporate perlinNoise2, fbmPerlin, cellularNoise, turbulence, domainWarp, and other noise functions for organic patterns
 - IMPORTANT: Make each mutation VISUALLY DISTINCT from the original and from previous mutations
@@ -180,6 +191,8 @@ ${params.preserveParams ? '  * Keep all @param comments with same format: // @pa
 - The shader should still compile and produce visual output
 - Be creative with the visual logic but maintain technical correctness
 - AVOID making the same type of change multiple times - be diverse!
+- Note: the modulus (mod) operator in WGSL is "fmod", not "mod"
+
 
 OUTPUT FORMAT:
 Return ONLY the complete mutated shader code, nothing else. Do not include explanations or markdown code blocks.`;
@@ -227,6 +240,13 @@ Example usage:
   let warped = domainWarp(coord * 4.0, 0.5);  // Organic distortion
   let cells = cellularNoise(coord * 8.0);     // Cell-like patterns
 
+EXPERIMENTATION WORKFLOW:
+- You have access to a render_shader tool that lets you SEE what a shader looks like!
+- Use this tool to experiment with different ideas before finalizing your variations
+- Try bold experiments - if they don't look good, you can try something else
+- You can render up to 3 test shaders to explore the creative space
+- Once you've found interesting variations through experimentation, output them with shader_output
+
 CRITICAL REQUIREMENTS:
 - Generate EXACTLY ${params.count} variations
 - Use a temperature of ${params.temperature}: 0 means no change at all (return the original), 1.0 means make many changes
@@ -243,12 +263,14 @@ CRITICAL REQUIREMENTS:
   - Write new functions and use them
   - Think about new math operations (abs, modf, ceil/floor, dot, cross, fract, min, max)
   - Think about symmetry vs. asymmetry: mirror, kaleidoscope, shapes (triangle/square/hex/circles)
+  - Think about abstract patterns, interesting variations and "out-of-the-box" ideas
   - Add functions for rotation and other creative coordinate transformations when you feel like it
   - Don't be afraid to add new functions and use them!
   - It's OK to add code and change things without knowing what it'll look like. Just be creative.
   - Add params for interesting constants
-  - After evolving, delete any params that don't do anything interesting.
+  - After evolving, you may delete any params that don't do anything interesting.
 - With a temp of 0.1, change 1 or 2 of each of those. With a temp of 0.5, change around 5 of each of those. With a temp of 1.0, change most of them so the result is VERY different from the original.
+- With a temp > 0.8, be super creative and invent brand new looks, not just basic variations of the source.
 - BE CREATIVE!
 
 TECHNICAL CONSTRAINTS:
@@ -336,6 +358,25 @@ export const parameterNamesTool: Anthropic.Tool = {
       }
     },
     "required": ["names"]
+  }
+}
+
+export const renderShaderTool: Anthropic.Tool = {
+  "name": "render_shader",
+  "description": "Render a WGSL shader and see its visual output as an image. Use this to experiment with different variations and see what they look like before finalizing your output. You can call this multiple times to try different ideas.",
+  "input_schema": {
+    "type": "object",
+    "properties": {
+      "shader": {
+        "type": "string",
+        "description": "The complete WGSL shader code to render"
+      },
+      "notes": {
+        "type": "string",
+        "description": "Brief notes about what you're testing with this render (for your own reference)"
+      }
+    },
+    "required": ["shader"]
   }
 }
 

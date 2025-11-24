@@ -34,6 +34,7 @@ export const App: Component = () => {
   const [webgpuReady, setWebgpuReady] = createSignal(false);
   const [error, setError] = createSignal<string | null>(null);
   const [temperature, setTemperature] = createSignal(0.9); // Default evolution temperature
+  const [model, setModel] = createSignal('claude-haiku-4-5'); // Default model
   const [logs, setLogs] = createSignal<LogEntry[]>([]);
   const [logOverlayOpen, setLogOverlayOpen] = createSignal(false);
   const [mashupInProgress, setMashupInProgress] = createSignal(false);
@@ -82,7 +83,7 @@ export const App: Component = () => {
       console.log('API Key check:', apiKey ? `Found (${apiKey.substring(0, 15)}...)` : 'NOT FOUND');
       console.log('All env vars:', import.meta.env);
       if (apiKey) {
-        shaderEvolver = new ShaderEvolver(apiKey, compiler, parameterManager);
+        shaderEvolver = new ShaderEvolver(apiKey, compiler, parameterManager, context, bufferManager);
         console.log('ShaderEvolver initialized successfully');
       } else {
         console.warn('VITE_ANTHROPIC_API_KEY not set - evolution feature disabled');
@@ -472,9 +473,10 @@ export const App: Component = () => {
     // Start evolution
     const childrenCount = 6;
     const currentTemp = temperature(); // Get current temperature from signal
+    const currentModel = model(); // Get current model from signal
     evolutionStore.startEvolution(shaderId, shader.name, childrenCount, currentTemp);
 
-    addLog(`Starting evolution of "${shader.name}" (temp: ${currentTemp.toFixed(2)}, children: ${childrenCount})`);
+    addLog(`Starting evolution of "${shader.name}" (model: ${currentModel}, temp: ${currentTemp.toFixed(2)}, children: ${childrenCount})`);
 
     try {
       // Update progress: generating batch
@@ -486,8 +488,8 @@ export const App: Component = () => {
 
       addLog(`Generating ${childrenCount} shader variations...`);
 
-      // Evolve all children in one batch call with current temperature and baked params
-      const results = await shaderEvolver.evolveShaderBatch(shaderWithBakedParams, childrenCount, currentTemp);
+      // Evolve all children in one batch call with current temperature, model, and baked params
+      const results = await shaderEvolver.evolveShaderBatch(shaderWithBakedParams, childrenCount, currentTemp, currentModel);
 
       addLog(`Received ${results.length} variations, processing...`, 'success');
 
@@ -818,14 +820,15 @@ export const App: Component = () => {
 
     const mashupCount = 6;
     const currentTemp = temperature(); // Use current temperature
+    const currentModel = model(); // Use current model
     const parentNames = selectedShaders.map(s => s.name);
 
     setMashupInProgress(true);
-    addLog(`Starting mashup of ${selectedShaders.length} shaders: ${parentNames.join(', ')} (temp: ${currentTemp.toFixed(2)}, variants: ${mashupCount})`);
+    addLog(`Starting mashup of ${selectedShaders.length} shaders: ${parentNames.join(', ')} (model: ${currentModel}, temp: ${currentTemp.toFixed(2)}, variants: ${mashupCount})`);
 
     try {
       // Generate mashup variations
-      const results = await shaderEvolver.evolveMashup(selectedShaders, mashupCount, currentTemp);
+      const results = await shaderEvolver.evolveMashup(selectedShaders, mashupCount, currentTemp, currentModel);
 
       addLog(`Received ${results.length} mashup variations, processing...`, 'success');
 
@@ -892,11 +895,6 @@ export const App: Component = () => {
 
   return (
     <div class="app">
-      <header class="app-header">
-        <h1>Evolve Image Gen</h1>
-        <p>WebGPU Shader Evolution Platform</p>
-      </header>
-
       <Show when={!webgpuReady()} fallback={null}>
         <WebGPUCheck />
       </Show>
@@ -909,18 +907,14 @@ export const App: Component = () => {
       </Show>
 
       <Show when={webgpuReady() && !error()}>
-        <main class="app-main">
-          <div class="app-info">
-            <p>
-              Below are example shaders running in real-time. Adjust the parameters to see changes
-              instantly!
-            </p>
-          </div>
+        <Toolbar
+          temperature={temperature()}
+          model={model()}
+          onTemperatureChange={setTemperature}
+          onModelChange={setModel}
+        />
 
-          <Toolbar
-            temperature={temperature()}
-            onTemperatureChange={setTemperature}
-          />
+        <main class="app-main">
 
           <ShaderGrid
             shaders={shaderStore.getActiveShaders()}

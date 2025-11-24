@@ -6,7 +6,9 @@ import { type Component } from 'solid-js';
 
 interface ToolbarProps {
   temperature: number;
+  model: string;
   onTemperatureChange: (value: number) => void;
+  onModelChange: (model: string) => void;
 }
 
 export const Toolbar: Component<ToolbarProps> = (props) => {
@@ -15,11 +17,34 @@ export const Toolbar: Component<ToolbarProps> = (props) => {
     props.onTemperatureChange(parseFloat(target.value));
   };
 
+  const handleModelChange = (e: Event) => {
+    const target = e.target as HTMLSelectElement;
+    props.onModelChange(target.value);
+  };
+
   return (
     <div class="toolbar">
+      <div class="toolbar-title">
+        <h1>Evolve Image Gen</h1>
+      </div>
+
       <div class="toolbar-section">
         <label class="toolbar-label">
-          Evolution Temperature
+          Model
+        </label>
+        <select
+          class="model-select"
+          value={props.model}
+          onChange={handleModelChange}
+        >
+          <option value="claude-haiku-4-5">Haiku 4.5 (fast)</option>
+          <option value="claude-sonnet-4-5">Sonnet 4.5 (better)</option>
+        </select>
+      </div>
+
+      <div class="toolbar-section">
+        <label class="toolbar-label">
+          Temperature
           <span class="toolbar-value">{props.temperature.toFixed(2)}</span>
         </label>
         <input
@@ -31,9 +56,6 @@ export const Toolbar: Component<ToolbarProps> = (props) => {
           prop:value={props.temperature}
           onInput={handleSliderChange}
         />
-        <div class="toolbar-hint">
-          Lower = subtle changes, Higher = more variation
-        </div>
       </div>
     </div>
   );
