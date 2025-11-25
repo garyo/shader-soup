@@ -246,6 +246,32 @@ fn orthonormal_basis(n: vec3<f32>) -> mat3x3<f32> {
     return mat3x3<f32>(u, v, n);
 }
 
+// N-way rotational symmetry with optional mirroring
+// n: number of symmetry sectors (e.g., 6 for hexagonal)
+// mirror: if true, mirrors every other sector for true reflection symmetry
+fn radialSymmetry(p: vec2f, n: i32, mirror: bool) -> vec2f {
+    let angle = atan2(p.y, p.x);
+    let r = length(p);
+    
+    let sectorAngle = 6.28318530718 / f32(n);  // 2π / n
+    
+    // Find angle within the current sector [0, sectorAngle)
+    let angleInSector = angle - floor(angle / sectorAngle) * sectorAngle;
+    
+    // Optionally mirror every other sector
+    let finalAngle = select(
+        angleInSector,
+        select(
+            angleInSector,
+            sectorAngle - angleInSector,
+            (i32(floor(angle / sectorAngle)) & 1) == 1
+        ),
+        mirror
+    );
+    
+    return vec2f(r * cos(finalAngle), r * sin(finalAngle));
+}
+
 // ---------------------------------------------------------------------------
 // Matrix Helpers
 // ---------------------------------------------------------------------------

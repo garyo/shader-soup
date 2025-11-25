@@ -24,6 +24,7 @@ export interface WorkgroupDimensions {
  */
 export interface ShaderParameter {
   name: string;
+  type: 'f32' | 'i32'; // WGSL type
   min: number;
   max: number;
   default: number;

@@ -139,6 +139,26 @@ export const App: Component = () => {
       const promotedCount = shaderStore.loadPromotedShaders();
       console.log(`Loaded ${promotedCount} promoted shaders from localStorage`);
 
+      // Re-parse parameters for all promoted shaders to fix any inconsistencies
+      for (const shader of shaderStore.shaders.values()) {
+        if (shaderStore.isPromoted(shader.id)) {
+          const reparsedParams = parameterManager.parseParameters(shader.source);
+          const reparsedIterations = parameterManager.parseIterations(shader.source);
+
+          // Check if parameters changed
+          if (reparsedParams.length !== shader.parameters.length) {
+            console.log(`[Storage Fix] Shader "${shader.name}" had ${shader.parameters.length} params, re-parsed to ${reparsedParams.length}`);
+            shaderStore.updateShader(shader.id, shader.source, reparsedParams);
+          }
+
+          // Check if iterations changed
+          if (reparsedIterations !== shader.iterations) {
+            console.log(`[Storage Fix] Shader "${shader.name}" had ${shader.iterations} iterations, re-parsed to ${reparsedIterations}`);
+            shaderStore.updateIterationValue(shader.id, reparsedIterations);
+          }
+        }
+      }
+
       // Load example shaders
       loadExampleShaders();
     } catch (err) {
@@ -572,8 +592,15 @@ export const App: Component = () => {
       const newParameters = parameterManager.parseParameters(newSource);
       const newIterations = parameterManager.parseIterations(newSource);
 
+      console.log('[ShaderEdit] Parsed parameters:', newParameters);
+      console.log('[ShaderEdit] Parameter count:', newParameters.length);
+
       // Update shader in store (this handles source, parameters, and parameter values)
       shaderStore.updateShader(shaderId, newSource, newParameters);
+
+      // Verify the update worked
+      const updatedShader = shaderStore.getShader(shaderId);
+      console.log('[ShaderEdit] Updated shader from store:', updatedShader?.parameters.length, 'parameters');
 
       // Also update iterations if they changed
       if (newIterations !== shader.iterations) {
@@ -584,6 +611,7 @@ export const App: Component = () => {
       // (without this, cached pipelines and shader modules will use old code)
       compiler.clearCache();
       pipelineBuilder.clearCache();
+      bufferManager.destroyPool(); // Clear buffer pool to avoid reusing old parameter buffers
 
       // Re-execute the shader with the new source
       await executeShader(shaderId);

@@ -44,14 +44,17 @@ export class ParameterManager {
     }
 
     const structBody = structMatch[1];
+    console.log('[ParameterParser] Struct body:', structBody);
 
     // Parse each field in the struct
     // Match: fieldName: type, // optional comment with min=X, max=Y, default=Z, step=W
-    const fieldRegex = /(\w+)\s*:\s*f32\s*,?\s*(?:\/\/\s*(.*))?/g;
+    // Support both f32 and i32 types
+    const fieldRegex = /(\w+)\s*:\s*(f32|i32)\s*,?\s*(?:\/\/\s*(.*))?/g;
 
     let match;
     while ((match = fieldRegex.exec(structBody)) !== null) {
-      const [, name, comment] = match;
+      const [, name, type, comment] = match;
+      console.log('[ParameterParser] Found field:', name, 'type:', type, 'comment:', comment);
 
       // Default values
       let min = 0.0;
@@ -74,6 +77,7 @@ export class ParameterManager {
 
       const param: ShaderParameter = {
         name,
+        type: type as 'f32' | 'i32',
         min,
         max,
         default: defaultValue,
@@ -137,17 +141,19 @@ export class ParameterManager {
   }
 
   /**
-   * Get parameter values as Float32Array
+   * Get parameter values as ArrayBuffer with proper types (f32 or i32)
    * @param parameters - Shader parameters
    * @param values - Optional parameter values (defaults to default values)
-   * @returns Float32Array with parameter values
+   * @returns ArrayBuffer with parameter values (each parameter is 4 bytes)
    */
   public getParameterValues(
     parameters: ShaderParameter[],
     values?: Map<string, number>
-  ): Float32Array {
-    // Each f32 in WGSL, so array length = parameter count
-    const array = new Float32Array(parameters.length);
+  ): ArrayBuffer {
+    // Each parameter is 4 bytes (f32 or i32)
+    const buffer = new ArrayBuffer(parameters.length * 4);
+    const float32View = new Float32Array(buffer);
+    const int32View = new Int32Array(buffer);
 
     for (let i = 0; i < parameters.length; i++) {
       const param = parameters[i];
@@ -155,10 +161,16 @@ export class ParameterManager {
 
       // Validate and clamp value
       const clampedValue = this.validateAndClampValue(value, param);
-      array[i] = clampedValue;
+
+      // Write as the appropriate type
+      if (param.type === 'i32') {
+        int32View[i] = Math.round(clampedValue);
+      } else {
+        float32View[i] = clampedValue;
+      }
     }
 
-    return array;
+    return buffer;
   }
 
   /**
@@ -186,8 +198,11 @@ export class ParameterManager {
     // Validate and clamp value
     const clampedValue = this.validateAndClampValue(value, param);
 
-    // Update buffer at offset (4 bytes per f32)
-    const data = new Float32Array([clampedValue]);
+    // Update buffer at offset (4 bytes per parameter)
+    // Use appropriate typed array based on parameter type
+    const data = param.type === 'i32'
+      ? new Int32Array([Math.round(clampedValue)])
+      : new Float32Array([clampedValue]);
     this.bufferManager.writeToBuffer(buffer, data, index * 4);
   }
 

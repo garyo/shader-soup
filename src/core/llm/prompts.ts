@@ -78,6 +78,10 @@ BIT OPERATIONS
 
 GEOMETRY
 - orthonormal_basis(n): Build 3x3 basis from normal vector n.
+- radialSymmetry(p: vec2f, n: i32, mirror: bool) -> vec2f: N-way rotational symmetry with optional mirroring
+  // n: number of symmetry sectors (e.g., 6 for hexagonal)
+  // mirror: if true, mirrors every other sector for true reflection symmetry
+
 
 MATRIX HELPERS
 - outer(a,b): Outer product matrix.
