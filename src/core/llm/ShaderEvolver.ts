@@ -849,7 +849,7 @@ export class ShaderEvolver {
     const memorySummary = this.memory.getMemorySummary(10);
     const fullUserPrompt = `${user}\n\n${memorySummary}`;
 
-    console.log(`Batch mutating with ${model}, params ${JSON.stringify(promptParams)}, memory entries: ${this.memory.getEntryCount()}`);
+    console.log(`Batch mutating with ${model}, memory entries: ${this.memory.getEntryCount()}`);
 
     // Render parent shader to image for visual feedback (128x128 for speed)
     console.log('Rendering parent shader for visual feedback...');

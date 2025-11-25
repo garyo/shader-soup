@@ -98,7 +98,6 @@ export const App: Component = () => {
       // Initialize LLM-based shader evolver
       const apiKey = import.meta.env.VITE_ANTHROPIC_API_KEY;
       console.log('API Key check:', apiKey ? `Found (${apiKey.substring(0, 15)}...)` : 'NOT FOUND');
-      console.log('All env vars:', import.meta.env);
       if (apiKey) {
         shaderEvolver = new ShaderEvolver(apiKey, compiler, parameterManager, context, bufferManager, {
           experimentsPerChild: EVOLUTION_CONFIG.experimentsPerChild,

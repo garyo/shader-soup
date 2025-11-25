@@ -13,27 +13,42 @@ fn pcg(n: u32) -> u32 {
     return (h >> 22u) ^ h;
 }
 
-// xxHash32 - high quality hash function
-fn xxhash32(n: u32) -> u32 {
-    var h32 = n + 374761393u;
-    h32 = 668265263u * ((h32 << 17) | (h32 >> (32 - 17)));
-    h32 = 2246822519u * (h32 ^ (h32 >> 15));
-    h32 = 3266489917u * (h32 ^ (h32 >> 13));
-    return h32 ^ (h32 >> 16);
+// Single u32 finalizer (based on lowbias32)
+fn hash_u32(n: u32) -> u32 {
+    var h = n;
+    h ^= h >> 16;
+    h *= 0x7feb352du;
+    h ^= h >> 15;
+    h *= 0x846ca68bu;
+    h ^= h >> 16;
+    return h;
 }
 
-// Hash 2D position to float in [0, 1]
+// Hash 2D integer coordinates to float in [0, 1)
 fn hash21(p: vec2f) -> f32 {
-    let n = u32(p.x * 374761393.0 + p.y * 668265263.0);
-    return f32(xxhash32(n)) / 4294967296.0;
+    // Combine coordinates using bitcast to preserve bit patterns
+    let ix = bitcast<u32>(p.x);
+    let iy = bitcast<u32>(p.y);
+    
+    // Mix the two values - this is critical for quality
+    let n = ix ^ (iy * 0x1b873593u);
+    
+    return f32(hash_u32(n)) / 4294967296.0;
 }
 
 // Hash 2D position to vec2 in [0, 1]
 fn hash22(p: vec2f) -> vec2f {
-    let n = u32(p.x * 374761393.0 + p.y * 668265263.0);
-    let h1 = xxhash32(n);
-    let h2 = xxhash32(h1);
-    return vec2f(f32(h1), f32(h2)) / 4294967296.0;
+    let ix = bitcast<u32>(p.x);
+    let iy = bitcast<u32>(p.y);
+    
+    // Generate two different hashes by varying the combination
+    let h1 = hash_u32(ix ^ (iy * 0x1b873593u));
+    let h2 = hash_u32(iy ^ (ix * 0x85ebca6bu));
+    
+    return vec2f(
+        f32(h1) / 4294967296.0,
+        f32(h2) / 4294967296.0
+    );
 }
 
 // =============================================================================

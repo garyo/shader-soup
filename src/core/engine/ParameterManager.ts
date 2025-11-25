@@ -44,7 +44,6 @@ export class ParameterManager {
     }
 
     const structBody = structMatch[1];
-    console.log('[ParameterParser] Struct body:', structBody);
 
     // Parse each field in the struct
     // Match: fieldName: type, // optional comment with min=X, max=Y, default=Z, step=W
@@ -54,7 +53,6 @@ export class ParameterManager {
     let match;
     while ((match = fieldRegex.exec(structBody)) !== null) {
       const [, name, type, comment] = match;
-      console.log('[ParameterParser] Found field:', name, 'type:', type, 'comment:', comment);
 
       // Default values
       let min = 0.0;

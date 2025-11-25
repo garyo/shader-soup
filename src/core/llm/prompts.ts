@@ -12,8 +12,8 @@ const NOISE_LIBRARY_DOCS = `AVAILABLE NOISE LIBRARY:
 All shaders have access to a comprehensive noise library that is automatically included. You can use any of these functions (or write your own custom functions with DIFFERENT names):
 
 Hash Functions:
-- pcg(n: u32) -> u32
-- xxhash32(n: u32) -> u32
+- pcg(n: u32) -> u32 // PCG-RXS-M-XS hash function, very good
+- hash_u32(n: u32) -> u32 // lowbias32 hash function, very good
 - hash21(p: vec2f) -> f32 - Hash 2D position to float [0,1]
 - hash22(p: vec2f) -> vec2f - Hash 2D position to vec2 [0,1]
 
@@ -70,6 +70,9 @@ COLOR HELPERS
 - srgb_to_linear(c): Convert sRGB to linear RGB.
 - hsv_to_rgb(h,s,v): Convert HSV to RGB (h in radians 0 to 2π, s and v in 0 to 1).
 - rgb_to_hsv(rgb): Convert RGB to HSV (returns vec3(h,s,v) with h in radians 0 to 2π).
+- screen(a: f32, b: f32) -> f32: "screen" operator, nice for combining 0-1 values
+- screen(a: vec3<f32>, b: vec3<f32>) -> vec3<f32>: "screen" operator, nice for combining 0-1 color values (e.g. RGB). Use this instead of + for better results.
+
 
 BIT OPERATIONS
 - popcount(x): Count bits set in a u32.
@@ -81,6 +84,7 @@ GEOMETRY
 - radialSymmetry(p: vec2f, n: i32, mirror: bool) -> vec2f: N-way rotational symmetry with optional mirroring
   // n: number of symmetry sectors (e.g., 6 for hexagonal)
   // mirror: if true, mirrors every other sector for true reflection symmetry
+- hexGrid(p: vec2f) -> vec4f: hexagonal grid. Returns: xy = cell coordinates, z = cell ID hash, w = distance from center
 
 
 MATRIX HELPERS

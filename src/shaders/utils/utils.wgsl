@@ -122,14 +122,7 @@ fn fast_log(x: f32) -> f32 {
 // RNG / Hashing
 // ---------------------------------------------------------------------------
 
-fn hash_u32(x: u32) -> u32 {
-    var h = x * 0x85ebca6bu;
-    h ^= h >> 13u;
-    h *= 0xc2b2ae35u;
-    h ^= h >> 16u;
-    return h;
-}
-
+// uses hash_u32 from noise lib
 fn rand_f32(seed: u32) -> f32 {
     return f32(hash_u32(seed)) / 4294967295.0;
 }
@@ -272,6 +265,44 @@ fn radialSymmetry(p: vec2f, n: i32, mirror: bool) -> vec2f {
     return vec2f(r * cos(finalAngle), r * sin(finalAngle));
 }
 
+// Hexagonal grid
+// Returns: xy = cell coordinates, z = cell ID hash, w = distance from center
+fn hexGrid(p: vec2f) -> vec4f {
+    // Hexagon dimensions: pointy-top orientation
+    // A hexagon with circumradius 1 has:
+    //   width = sqrt(3), height = 2
+    //   horizontal spacing = sqrt(3), vertical spacing = 1.5
+    
+    let scale = vec2f(1.0 / sqrt(3.0), 1.0 / 1.5);
+    let scaled = p * scale;
+    
+    // Two candidate grids offset by half a cell
+    let gridA = floor(scaled);
+    let gridB = floor(scaled + 0.5) - 0.5;
+    
+    // Local coordinates within each candidate
+    let localA = scaled - gridA - 0.5;
+    let localB = scaled - gridB - 0.5;
+    
+    // Pick the closer center
+    let distA = dot(localA, localA);
+    let distB = dot(localB, localB);
+    
+    let useA = step(distA, distB);
+    let cell = mix(gridB, gridA, useA);
+    let local = mix(localB, localA, useA);
+    
+    // Convert back to world-ish coordinates for the cell ID
+    // Offset every other row to get unique IDs
+    let cellInt = vec2i(cell);
+    let id = hash_u32(u32(cellInt.x + cellInt.y * 1337));
+    
+    // Distance from hex center (Euclidean)
+    let dist = length(local);
+    
+    return vec4f(cell, f32(id) / 4294967296.0, dist);
+}
+
 // ---------------------------------------------------------------------------
 // Matrix Helpers
 // ---------------------------------------------------------------------------
@@ -294,4 +325,16 @@ fn mul_point(m: mat4x4<f32>, p: vec3<f32>) -> vec3<f32> {
 // Multiply direction vector (w=0)
 fn mul_vector(m: mat4x4<f32>, v: vec3<f32>) -> vec3<f32> {
     return (m * vec4<f32>(v, 0.0)).xyz;
+}
+
+// ---------------------------------------------------------------------------
+// Compositing helpers
+// ---------------------------------------------------------------------------
+
+fn screen(a: f32, b: f32) -> f32 {
+   return a + b - a * b;
+}
+
+fn screen_color(a: vec3<f32>, b: vec3<f32>) -> vec3<f32> {
+   return a + b - a * b;
 }
