@@ -28,7 +28,7 @@ fn inv_lerp(a: f32, b: f32, v: f32) -> f32 {
 }
 
 // Remap v from one range to another
-fn remap(inMin: f32, inMax: f32, outMin: f32, outMax: f32, v: f32) -> f32 {
+fn remap(v: f32, inMin: f32, inMax: f32, outMin: f32, outMax: f32) -> f32 {
     return mix(outMin, outMax, inv_lerp(inMin, inMax, v));
 }
 

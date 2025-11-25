@@ -44,7 +44,7 @@ SCALAR / VECTOR MATH
 - saturate_v3(v): Clamp vec3 to [0,1].
 - saturate_v4(v): Clamp vec4 to [0,1].
 - inv_lerp(a,b,v): Return normalized position of v in [a,b].
-- remap(inMin,inMax,outMin,outMax,v): Map v from one range to another.
+- remap(v, inMin,inMax,outMin,outMax): Map v from one range to another.
 - wrap(x,range): Wrap x into [0,range).
 - repeat(x,r): Repeat x modulo r; same as wrap but semantic name.
 - pingpong(x,length): Triangle-wave wrap for oscillation.
