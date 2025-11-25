@@ -1,10 +1,6 @@
 // Color Mixer
 // Generates gradient patterns with adjustable RGB color mixing
 
-// @param redIntensity: 0.0, 1.0, 0.5, 0.01
-// @param greenIntensity: 0.0, 1.0, 0.5, 0.01
-// @param blueIntensity: 0.0, 1.0, 0.5, 0.01
-// @param mixMode: 0.0, 3.0, 0.0, 1.0
 
 struct Dimensions {
   width: u32,
@@ -12,10 +8,10 @@ struct Dimensions {
 }
 
 struct Params {
-  redIntensity: f32,
-  greenIntensity: f32,
-  blueIntensity: f32,
-  mixMode: f32,
+  redIntensity: f32,  // min=0.0, max=1.0, default=0.5, step=0.01
+  greenIntensity: f32,  // min=0.0, max=1.0, default=0.5, step=0.01
+  blueIntensity: f32,  // min=0.0, max=1.0, default=0.5, step=0.01
+  mixMode: f32,  // min=0.0, max=3.0, default=0.0, step=1.0
 }
 
 @group(0) @binding(0) var coordTexture: texture_2d<f32>;

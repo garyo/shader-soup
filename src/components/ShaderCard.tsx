@@ -29,6 +29,9 @@ interface ShaderCardProps {
   onMashupToggle: (shaderId: string) => void;
   onDeleteShader: () => void;
   onDownloadShader: () => void;
+  onRenderPreview: (shader: ShaderDefinition, size: number) => Promise<ImageData | null>;
+  onShaderEdit: (shaderId: string, newSource: string) => Promise<{ success: boolean; error?: string }>;
+  onShaderCompile: (source: string) => Promise<{ success: boolean; errors?: Array<{ message: string; line?: number; column?: number }> }>;
 }
 
 export const ShaderCard: Component<ShaderCardProps> = (props) => {
@@ -207,7 +210,11 @@ export const ShaderCard: Component<ShaderCardProps> = (props) => {
 
       {/* Evolved Children */}
       <Show when={children().length > 0}>
-        <ChildrenGrid children={children()} onPromote={props.onPromoteChild} />
+        <ChildrenGrid
+          children={children()}
+          onPromote={props.onPromoteChild}
+          onRenderPreview={props.onRenderPreview}
+        />
       </Show>
 
       {/* Shader Code Modal */}
@@ -216,6 +223,10 @@ export const ShaderCard: Component<ShaderCardProps> = (props) => {
           shaderName={props.shader.name}
           shaderSource={props.shader.source}
           onClose={() => setShowCodeModal(false)}
+          onSave={async (newSource) => {
+            return await props.onShaderEdit(props.shader.id, newSource);
+          }}
+          onCompile={props.onShaderCompile}
         />
       </Show>
 

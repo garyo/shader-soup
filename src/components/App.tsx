@@ -19,8 +19,12 @@ import { Executor, createExecutionContext } from '@/core/engine/Executor';
 import { CoordinateGenerator } from '@/core/input/CoordinateGenerator';
 import { ResultRenderer } from '@/core/output/ResultRenderer';
 import { PostProcessor } from '@/core/output/PostProcessor';
+import { withGPUErrorScope } from '@/core/engine/GPUErrorHandler';
+import { executeFeedbackLoop } from '@/core/engine/FeedbackLoop';
+import { prepareShader } from '@/core/engine/ShaderPreparation';
 import { ShaderEvolver } from '@/core/llm';
 import type { ShaderDefinition } from '@/types/core';
+import { getErrorMessage, calculateSupersampledDimensions } from '@/utils/helpers';
 
 // Import example shader sources
 import sineWaveSource from '../shaders/examples/sine-wave.wgsl?raw';
@@ -29,6 +33,19 @@ import checkerboardSource from '../shaders/examples/checkerboard.wgsl?raw';
 import radialGradientSource from '../shaders/examples/radial-gradient.wgsl?raw';
 // Feedback disabled for now - complicates evolution and slows down rendering
 // import feedbackSource from '../shaders/examples/feedback.wgsl?raw';
+
+// ============================================================================
+// Evolution Configuration
+// ============================================================================
+const EVOLUTION_CONFIG = {
+  // Normal evolution settings
+  childrenCount: 3,           // Number of children to generate per evolution
+  experimentsPerChild: 2,     // Number of experimental renders per child
+
+  // Mashup settings
+  mashupCount: 4,             // Number of mashup variations to generate
+  mashupExperiments: 1,       // Number of experimental renders per mashup
+};
 
 export const App: Component = () => {
   const [webgpuReady, setWebgpuReady] = createSignal(false);
@@ -83,7 +100,34 @@ export const App: Component = () => {
       console.log('API Key check:', apiKey ? `Found (${apiKey.substring(0, 15)}...)` : 'NOT FOUND');
       console.log('All env vars:', import.meta.env);
       if (apiKey) {
-        shaderEvolver = new ShaderEvolver(apiKey, compiler, parameterManager, context, bufferManager);
+        shaderEvolver = new ShaderEvolver(apiKey, compiler, parameterManager, context, bufferManager, {
+          experimentsPerChild: EVOLUTION_CONFIG.experimentsPerChild,
+          mashupExperiments: EVOLUTION_CONFIG.mashupExperiments,
+          onProgress: (update) => {
+            // Handle progress updates from shader evolver
+            const activeEvolutions = Array.from(evolutionStore.activeEvolutions.entries());
+            if (activeEvolutions.length > 0) {
+              const [shaderId] = activeEvolutions[0]; // Get the active evolution
+              if (update.type === 'child') {
+                evolutionStore.updateProgress(shaderId, {
+                  currentChild: update.currentChild || 0,
+                  currentExperiment: update.currentExperiment || 0,
+                  status: 'mutating',
+                });
+              } else if (update.type === 'experiment') {
+                evolutionStore.updateProgress(shaderId, {
+                  currentExperiment: update.currentExperiment || 0,
+                  status: 'mutating',
+                });
+              } else if (update.type === 'debug') {
+                evolutionStore.updateProgress(shaderId, {
+                  debugAttempt: update.debugAttempt || 0,
+                  status: 'debugging',
+                });
+              }
+            }
+          }
+        });
         console.log('ShaderEvolver initialized successfully');
       } else {
         console.warn('VITE_ANTHROPIC_API_KEY not set - evolution feature disabled');
@@ -98,7 +142,7 @@ export const App: Component = () => {
       // Load example shaders
       loadExampleShaders();
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to initialize WebGPU');
+      setError(getErrorMessage(err, 'Failed to initialize WebGPU'));
     }
   });
 
@@ -167,10 +211,7 @@ export const App: Component = () => {
 
       // Supersample at 3x for antialiasing
       const supersampleFactor = 3;
-      const superDimensions = {
-        width: dimensions.width * supersampleFactor,
-        height: dimensions.height * supersampleFactor,
-      };
+      const superDimensions = calculateSupersampledDimensions(dimensions, supersampleFactor);
 
       // Get global parameters for zoom/pan
       const globalParams = shaderStore.getGlobalParameters(shaderId);
@@ -185,217 +226,110 @@ export const App: Component = () => {
       );
       const coordSampler = coordGenerator.createCoordinateSampler(context);
 
-      // Create output buffer at supersampled resolution (RGBA format: 4 bytes per pixel)
-      const outputSize = superDimensions.width * superDimensions.height * 4 * 4; // vec4<f32> = 16 bytes per pixel
-      const outputBuffer = bufferManager.createBuffer(
+      // Prepare shader: compile and create all necessary resources
+      const paramValues = shaderOverride
+        ? new Map(shader.parameters.map(p => [p.name, p.default]))
+        : undefined; // undefined means use store values
+
+      const prep = await prepareShader(
+        compiler,
+        bufferManager,
+        parameterManager,
+        pipelineBuilder,
+        executor,
+        (id) => shaderStore.getIterationValue(id),
+        (id) => shaderStore.getParameterValues(id),
         {
-          size: outputSize,
-          usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC | GPUBufferUsage.COPY_DST,
-          label: 'output',
-        },
-        false
+          shader,
+          shaderId,
+          dimensions: superDimensions,
+          labelSuffix: '',
+          parameterValues: paramValues,
+          measureCompileTime: true,
+        }
       );
 
-      // Compile shader (use cacheKey for internal caching)
-      const startCompile = performance.now();
-      const compilationResult = await compiler.compile(shader.source, shader.cacheKey);
-
-      if (!compilationResult.success || !compilationResult.module) {
-        throw new Error(`Compilation failed: ${ShaderCompiler.formatErrors(compilationResult.errors)}`);
-      }
-
-      const compileTime = performance.now() - startCompile;
-
-      // Create dimensions buffer (always required)
-      const dimensionsData = new Uint32Array([superDimensions.width, superDimensions.height, 0, 0]);
-      const dimensionsBuffer = bufferManager.createBufferWithData(
-        dimensionsData as BufferSource,
-        GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
-        'dimensions'
-      );
-
-      // Create parameter buffer if shader has parameters
-      let paramBuffer: GPUBuffer | undefined;
-      if (shader.parameters.length > 0) {
-        // Use shader defaults if not in store (for children)
-        const paramValues = shaderOverride
-          ? new Map(shader.parameters.map(p => [p.name, p.default]))
-          : shaderStore.getParameterValues(shaderId);
-        paramBuffer = parameterManager.createParameterBuffer(shader.parameters, paramValues);
-      }
-
-      // Check if shader uses iterations (feedback loop)
-      // Use stored iteration value if available, otherwise use shader default
-      const iterations = shaderStore.getIterationValue(shaderId) ?? shader.iterations ?? 1;
-      const hasIterations = iterations > 1;
-      const hasParams = shader.parameters.length > 0;
-
-      // Create bind group layout (with prevFrame support if iterations > 1)
-      const layout = pipelineBuilder.createStandardLayout(hasParams, hasIterations, shader.cacheKey);
-
-      // Create pipeline
-      const pipeline = pipelineBuilder.createPipeline({
-        shader: compilationResult.module,
-        entryPoint: 'main',
-        bindGroupLayouts: [layout],
-        label: shader.cacheKey,
-      });
-
-      const workgroups = executor.calculateWorkgroups(superDimensions.width, superDimensions.height);
+      const { outputBuffer, dimensionsBuffer, paramBuffer, layout, pipeline, workgroups, iterations, hasIterations, compileTime } = prep;
       const startExec = performance.now();
 
-      // Push error scopes for shader execution
+      // Execute shader with GPU error scope handling
       const device = context.getDevice();
-      device.pushErrorScope('validation');
-      device.pushErrorScope('out-of-memory');
+      await withGPUErrorScope(device, 'shader execution', async () => {
+        if (hasIterations) {
+          // Feedback loop with texture ping-pong
+          await executeFeedbackLoop(
+            device,
+            superDimensions,
+            iterations,
+            outputBuffer,
+            '',
+            async (ctx) => {
+              // Create bind group with prevFrame texture from feedback loop
+              const bindGroup = pipelineBuilder.createStandardBindGroup(
+                layout,
+                coordTexture,
+                coordSampler,
+                outputBuffer,
+                dimensionsBuffer,
+                paramBuffer,
+                ctx.prevTexture,
+                ctx.prevSampler
+              );
 
-      if (hasIterations) {
-        // Feedback loop: create two textures for ping-pong
-        const textureA = device.createTexture({
-          size: [superDimensions.width, superDimensions.height],
-          format: 'rgba32float', // Use rgba32float to match buffer format
-          usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST,
-          label: 'feedback-texture-A',
-        });
-        const textureB = device.createTexture({
-          size: [superDimensions.width, superDimensions.height],
-          format: 'rgba32float', // Use rgba32float to match buffer format
-          usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST,
-          label: 'feedback-texture-B',
-        });
-
-        // Initialize textureB to black/zero for first iteration
-        // rgba32float uses 16 bytes per pixel (4 channels * 4 bytes each)
-        const zeroData = new Float32Array(superDimensions.width * superDimensions.height * 4);
-        device.queue.writeTexture(
-          { texture: textureB },
-          zeroData,
-          { bytesPerRow: superDimensions.width * 16 },
-          [superDimensions.width, superDimensions.height]
-        );
-
-        // Create sampler for prevFrame (non-filtering for rgba32float)
-        const prevSampler = device.createSampler({
-          addressModeU: 'mirror-repeat',
-          addressModeV: 'mirror-repeat',
-          magFilter: 'nearest',
-          minFilter: 'nearest',
-        });
-
-        // Ping-pong between textures
-        for (let iter = 0; iter < iterations; iter++) {
-          const isLastIter = iter === iterations - 1;
-          const currentTexture = iter % 2 === 0 ? textureA : textureB;
-          const prevTexture = iter % 2 === 0 ? textureB : textureA;
-
-          // Create bind group for this iteration (always include prevFrame, even on first iteration)
+              // Execute compute shader
+              const executionContext = createExecutionContext(pipeline, bindGroup, workgroups, outputBuffer);
+              await executor.execute(executionContext);
+            }
+          );
+        } else {
+          // Single execution (no iterations)
           const bindGroup = pipelineBuilder.createStandardBindGroup(
             layout,
             coordTexture,
             coordSampler,
             outputBuffer,
             dimensionsBuffer,
-            paramBuffer,
-            prevTexture, // Always provide prevTexture (black on first iteration)
-            prevSampler
+            paramBuffer
           );
 
-          // Execute compute shader to current texture storage binding
-          // Note: We're still writing to outputBuffer, but we'll copy it to texture after
           const executionContext = createExecutionContext(pipeline, bindGroup, workgroups, outputBuffer);
           await executor.execute(executionContext);
-
-          // Copy output buffer to current texture for next iteration (unless last)
-          if (!isLastIter) {
-            const commandEncoder = device.createCommandEncoder();
-            commandEncoder.copyBufferToTexture(
-              { buffer: outputBuffer, bytesPerRow: superDimensions.width * 16 }, // Output buffer is vec4<f32> = 16 bytes per pixel
-              { texture: currentTexture }, // Texture is rgba16float = 8 bytes per pixel (GPU handles conversion)
-              [superDimensions.width, superDimensions.height]
-            );
-            device.queue.submit([commandEncoder.finish()]);
-            await device.queue.onSubmittedWorkDone();
-          }
         }
-
-        // Cleanup textures
-        textureA.destroy();
-        textureB.destroy();
-      } else {
-        // Single execution (no iterations)
-        const bindGroup = pipelineBuilder.createStandardBindGroup(
-          layout,
-          coordTexture,
-          coordSampler,
-          outputBuffer,
-          dimensionsBuffer,
-          paramBuffer
-        );
-
-        const executionContext = createExecutionContext(pipeline, bindGroup, workgroups, outputBuffer);
-        await executor.execute(executionContext);
-      }
+      });
 
       const execTime = performance.now() - startExec;
 
-      // Check for GPU errors during shader execution
-      const execMemError = await device.popErrorScope();
-      if (execMemError) {
-        throw new Error(`GPU out-of-memory during shader execution: ${execMemError.message}`);
-      }
-      const execValError = await device.popErrorScope();
-      if (execValError) {
-        throw new Error(`GPU validation error during shader execution: ${execValError.message}`);
-      }
-
       // Apply gamma/contrast post-processing (in linear RGB space)
       const postProcessStart = performance.now();
-      device.pushErrorScope('validation');
-      device.pushErrorScope('out-of-memory');
-
-      const processedBuffer = await postProcessor.applyGammaContrast(
-        outputBuffer,
-        superDimensions,
-        globalParams.gamma,
-        globalParams.contrast
-      );
-
-      const postMemError = await device.popErrorScope();
-      if (postMemError) {
-        throw new Error(`GPU out-of-memory during post-processing: ${postMemError.message}`);
-      }
-      const postValError = await device.popErrorScope();
-      if (postValError) {
-        throw new Error(`GPU validation error during post-processing: ${postValError.message}`);
-      }
-
+      const processedBuffer = await withGPUErrorScope(device, 'post-processing', async () => {
+        return await postProcessor.applyGammaContrast(
+          outputBuffer,
+          superDimensions,
+          globalParams.gamma,
+          globalParams.contrast
+        );
+      });
       const postProcessTime = performance.now() - postProcessStart;
 
       // Downsample on GPU, then convert to ImageData
       const downsampleStart = performance.now();
-      device.pushErrorScope('validation');
-      device.pushErrorScope('out-of-memory');
-
-      const downsampledBuffer = resultRenderer.downsample(processedBuffer, superDimensions, dimensions, supersampleFactor);
-      const imageData = await resultRenderer.bufferToImageData(downsampledBuffer, dimensions);
-
-      const downMemError = await device.popErrorScope();
-      if (downMemError) {
-        throw new Error(`GPU out-of-memory during downsampling: ${downMemError.message}`);
-      }
-      const downValError = await device.popErrorScope();
-      if (downValError) {
-        throw new Error(`GPU validation error during downsampling: ${downValError.message}`);
-      }
-
+      const imageData = await withGPUErrorScope(device, 'downsampling', async () => {
+        const downsampledBuffer = resultRenderer.downsample(processedBuffer, superDimensions, dimensions, supersampleFactor);
+        return await resultRenderer.bufferToImageData(downsampledBuffer, dimensions);
+      });
       const downsampleTime = performance.now() - downsampleStart;
 
-      const totalTime = compileTime + execTime + postProcessTime + downsampleTime;
+      const totalTime = (compileTime ?? 0) + execTime + postProcessTime + downsampleTime;
 
       // Log execution time
       addLog(
-        `Rendered "${shader.name}": compile ${compileTime.toFixed(1)}ms + exec ${execTime.toFixed(1)}ms + post ${postProcessTime.toFixed(1)}ms + downsample ${downsampleTime.toFixed(1)}ms = ${totalTime.toFixed(1)}ms (${superDimensions.width}x${superDimensions.height} → ${dimensions.width}x${dimensions.height})`
+        `Rendered "${shader.name}": compile ${(compileTime ?? 0).toFixed(1)}ms + exec ${execTime.toFixed(1)}ms + post ${postProcessTime.toFixed(1)}ms + downsample ${downsampleTime.toFixed(1)}ms = ${totalTime.toFixed(1)}ms (${superDimensions.width}x${superDimensions.height} → ${dimensions.width}x${dimensions.height})`
       );
+
+      // Log slow renders to console for debugging
+      if (totalTime > 500) {
+        console.warn(`[RENDER] Slow render of "${shader.name}" (${totalTime.toFixed(1)}ms): compile=${(compileTime ?? 0).toFixed(1)}ms, exec=${execTime.toFixed(1)}ms, post=${postProcessTime.toFixed(1)}ms, downsample=${downsampleTime.toFixed(1)}ms`);
+      }
 
       // Update result store
       resultStore.updateResult({
@@ -407,9 +341,20 @@ export const App: Component = () => {
 
       resultStore.clearError(shaderId);
     } catch (err) {
-      const errorMessage = err instanceof Error ? err.message : 'Unknown error';
+      const errorMessage = getErrorMessage(err);
       resultStore.setError(shaderId, errorMessage);
       console.error(`Shader ${shaderId} execution failed:`, err);
+
+      // If this is a GPU validation error, log the shader source for debugging
+      if (errorMessage.includes('GPU validation error') || errorMessage.includes('binding') || errorMessage.includes('Binding')) {
+        const shader = shaderOverride || shaderStore.getShader(shaderId);
+        if (shader) {
+          console.error(`Failed shader "${shader.name}" (${shaderId})`);
+          console.error(`Shader source:`, shader.source);
+          console.error(`Shader parameters:`, shader.parameters);
+          console.error(`Shader iterations:`, shader.iterations);
+        }
+      }
     }
   };
 
@@ -471,21 +416,14 @@ export const App: Component = () => {
     };
 
     // Start evolution
-    const childrenCount = 6;
+    const childrenCount = EVOLUTION_CONFIG.childrenCount;
     const currentTemp = temperature(); // Get current temperature from signal
     const currentModel = model(); // Get current model from signal
-    evolutionStore.startEvolution(shaderId, shader.name, childrenCount, currentTemp);
+    evolutionStore.startEvolution(shaderId, shader.name, childrenCount, currentTemp, EVOLUTION_CONFIG.experimentsPerChild);
 
     addLog(`Starting evolution of "${shader.name}" (model: ${currentModel}, temp: ${currentTemp.toFixed(2)}, children: ${childrenCount})`);
 
     try {
-      // Update progress: generating batch
-      evolutionStore.updateProgress(shaderId, {
-        currentChild: 0,
-        status: 'mutating',
-        debugAttempt: 0,
-      });
-
       addLog(`Generating ${childrenCount} shader variations...`);
 
       // Evolve all children in one batch call with current temperature, model, and baked params
@@ -496,12 +434,6 @@ export const App: Component = () => {
       // Process each result
       for (let i = 0; i < results.length; i++) {
         const result = results[i];
-
-        evolutionStore.updateProgress(shaderId, {
-          currentChild: i + 1,
-          status: result.success ? 'naming' : 'mutating',
-          debugAttempt: result.debugAttempts || 0,
-        });
 
         if (result.success && result.shader) {
           addLog(`✓ Child ${i + 1}/${childrenCount} compiled successfully (${result.debugAttempts || 0} debug attempts)`);
@@ -522,7 +454,7 @@ export const App: Component = () => {
 
       addLog(`Evolution complete: ${results.filter(r => r.success).length}/${childrenCount} succeeded`, 'success');
     } catch (error) {
-      const errorMsg = error instanceof Error ? error.message : 'Unknown batch evolution error';
+      const errorMsg = getErrorMessage(error, 'Unknown batch evolution error');
       addLog(`Evolution failed: ${errorMsg}`, 'error');
       console.error('Batch evolution error:', error);
       evolutionStore.updateProgress(shaderId, {
@@ -561,6 +493,110 @@ export const App: Component = () => {
     }
   };
 
+  const handleShaderCompile = async (source: string): Promise<{ success: boolean; errors?: Array<{ message: string; line?: number; column?: number }> }> => {
+    try {
+      // Try to compile the source (without saving)
+      const compileResult = await compiler.compile(source, 'live-check', false);
+
+      // Get the line offset (number of lines before user code starts)
+      const lineOffset = compiler.getUserCodeLineOffset();
+
+      if (!compileResult.success) {
+        // Adjust line numbers to be relative to user code
+        const adjustedErrors = compileResult.errors
+          .map(error => {
+            if (error.line !== undefined) {
+              const adjustedLine = error.line - lineOffset;
+              // Only include errors in user code (not in prepended libraries)
+              if (adjustedLine > 0) {
+                return { ...error, line: adjustedLine };
+              }
+              // Error is in library code, show generic message
+              return { message: `${error.message} (in library code)`, line: undefined, column: undefined };
+            }
+            return error;
+          })
+          .filter(error => error !== null);
+
+        return { success: false, errors: adjustedErrors };
+      }
+
+      // Also validate pipeline creation
+      const hasParams = source.includes('struct Params');
+      const hasInputTexture = source.includes('prevFrame');
+      const pipelineErrors = await compiler.validatePipeline(compileResult.module!, hasParams, hasInputTexture);
+
+      if (pipelineErrors.length > 0) {
+        // Convert pipeline errors to the expected format (no line numbers for pipeline errors)
+        const errors = pipelineErrors.map(msg => ({ message: msg }));
+        return { success: false, errors };
+      }
+
+      return { success: true, errors: [] };
+    } catch (error) {
+      const errorMsg = getErrorMessage(error);
+      return { success: false, errors: [{ message: errorMsg }] };
+    }
+  };
+
+  const handleShaderEdit = async (shaderId: string, newSource: string): Promise<{ success: boolean; error?: string }> => {
+    const shader = shaderStore.getShader(shaderId);
+    if (!shader) {
+      return { success: false, error: 'Shader not found' };
+    }
+
+    addLog(`Compiling edited shader "${shader.name}"...`);
+
+    try {
+      // Try to compile the new source
+      const compileResult = await compiler.compile(newSource, `edit-${shaderId}`, false);
+
+      if (!compileResult.success || !compileResult.module) {
+        const errorMsg = ShaderCompiler.formatErrors(compileResult.errors);
+        addLog(`Compilation failed: ${errorMsg}`, 'error');
+        return { success: false, error: `Compilation error:\n${errorMsg}` };
+      }
+
+      // Validate by creating a GPU pipeline
+      const hasParams = newSource.includes('struct Params');
+      const hasInputTexture = newSource.includes('prevFrame');
+      const pipelineErrors = await compiler.validatePipeline(compileResult.module, hasParams, hasInputTexture);
+
+      if (pipelineErrors.length > 0) {
+        const errorMsg = pipelineErrors.join('\n');
+        addLog(`GPU validation failed: ${errorMsg}`, 'error');
+        return { success: false, error: `GPU validation error:\n${errorMsg}` };
+      }
+
+      // Parse new parameters from the edited source
+      const newParameters = parameterManager.parseParameters(newSource);
+      const newIterations = parameterManager.parseIterations(newSource);
+
+      // Update shader in store (this handles source, parameters, and parameter values)
+      shaderStore.updateShader(shaderId, newSource, newParameters);
+
+      // Also update iterations if they changed
+      if (newIterations !== shader.iterations) {
+        shaderStore.updateIterationValue(shaderId, newIterations);
+      }
+
+      // Clear caches to ensure new shader code is used
+      // (without this, cached pipelines and shader modules will use old code)
+      compiler.clearCache();
+      pipelineBuilder.clearCache();
+
+      // Re-execute the shader with the new source
+      await executeShader(shaderId);
+
+      addLog(`Successfully updated shader "${shader.name}"`, 'success');
+      return { success: true };
+    } catch (error) {
+      const errorMsg = getErrorMessage(error);
+      addLog(`Failed to update shader: ${errorMsg}`, 'error');
+      return { success: false, error: errorMsg };
+    }
+  };
+
   const handleDownloadShader = async (shaderId: string) => {
     const shader = shaderStore.getShader(shaderId);
     if (!shader) return;
@@ -573,10 +609,7 @@ export const App: Component = () => {
 
       // Supersample at 3x for antialiasing
       const supersampleFactor = 3;
-      const superDimensions = {
-        width: hiResDimensions.width * supersampleFactor,
-        height: hiResDimensions.height * supersampleFactor,
-      };
+      const superDimensions = calculateSupersampledDimensions(hiResDimensions, supersampleFactor);
 
       // Get global parameters
       const globalParams = shaderStore.getGlobalParameters(shaderId);
@@ -585,211 +618,103 @@ export const App: Component = () => {
       const device = context.getDevice();
 
       // Create coordinate texture with zoom/pan
-      device.pushErrorScope('validation');
-      device.pushErrorScope('out-of-memory');
-
-      const coordTexture = await coordGenerator.createCoordinateTexture(
-        superDimensions,
-        context,
-        globalParams.zoom,
-        globalParams.panX,
-        globalParams.panY
-      );
-
-      const memError = await device.popErrorScope();
-      if (memError) {
-        throw new Error(`GPU out-of-memory creating coordinate texture: ${memError.message}`);
-      }
-      const valError = await device.popErrorScope();
-      if (valError) {
-        throw new Error(`GPU validation error creating coordinate texture: ${valError.message}`);
-      }
+      const coordTexture = await withGPUErrorScope(device, 'coordinate texture creation', async () => {
+        return await coordGenerator.createCoordinateTexture(
+          superDimensions,
+          context,
+          globalParams.zoom,
+          globalParams.panX,
+          globalParams.panY
+        );
+      });
 
       const coordSampler = coordGenerator.createCoordinateSampler(context);
 
-      // Create output buffer
-      const outputSize = superDimensions.width * superDimensions.height * 4 * 4;
-      const outputBuffer = bufferManager.createBuffer(
+      // Prepare shader: compile and create all necessary resources
+      const prep = await prepareShader(
+        compiler,
+        bufferManager,
+        parameterManager,
+        pipelineBuilder,
+        executor,
+        (id) => shaderStore.getIterationValue(id),
+        (id) => shaderStore.getParameterValues(id),
         {
-          size: outputSize,
-          usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC | GPUBufferUsage.COPY_DST,
-          label: 'output-hires',
-        },
-        false
+          shader,
+          shaderId,
+          dimensions: superDimensions,
+          labelSuffix: 'hires',
+          measureCompileTime: false,
+        }
       );
 
-      // Compile shader
-      const compilationResult = await compiler.compile(shader.source, shader.cacheKey);
-      if (!compilationResult.success || !compilationResult.module) {
-        throw new Error(`Compilation failed: ${ShaderCompiler.formatErrors(compilationResult.errors)}`);
-      }
-
-      // Create dimensions buffer
-      const dimensionsData = new Uint32Array([superDimensions.width, superDimensions.height, 0, 0]);
-      const dimensionsBuffer = bufferManager.createBufferWithData(
-        dimensionsData as BufferSource,
-        GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
-        'dimensions-hires'
-      );
-
-      // Create parameter buffer if shader has parameters
-      let paramBuffer: GPUBuffer | undefined;
-      if (shader.parameters.length > 0) {
-        const paramValues = shaderStore.getParameterValues(shaderId);
-        paramBuffer = parameterManager.createParameterBuffer(shader.parameters, paramValues);
-      }
-
-      // Get iteration value
-      const iterations = shaderStore.getIterationValue(shaderId) ?? shader.iterations ?? 1;
-      const hasIterations = iterations > 1;
-      const hasParams = shader.parameters.length > 0;
-
-      // Create bind group layout and pipeline (reuse same cache key as preview)
-      const layout = pipelineBuilder.createStandardLayout(hasParams, hasIterations, shader.cacheKey);
-      const pipeline = pipelineBuilder.createPipeline({
-        shader: compilationResult.module,
-        entryPoint: 'main',
-        bindGroupLayouts: [layout],
-        label: shader.cacheKey,
-      });
-
-      const workgroups = executor.calculateWorkgroups(superDimensions.width, superDimensions.height);
+      const { outputBuffer, dimensionsBuffer, paramBuffer, layout, pipeline, workgroups, iterations, hasIterations } = prep;
 
       addLog(`Rendering at ${superDimensions.width}x${superDimensions.height}...`);
 
-      // Push error scopes for shader execution
-      device.pushErrorScope('validation');
-      device.pushErrorScope('out-of-memory');
+      // Execute shader (with iterations if needed) with GPU error scope handling
+      await withGPUErrorScope(device, 'shader execution', async () => {
+        if (hasIterations) {
+          // Feedback loop with texture ping-pong
+          await executeFeedbackLoop(
+            device,
+            superDimensions,
+            iterations,
+            outputBuffer,
+            'hires',
+            async (ctx) => {
+              const bindGroup = pipelineBuilder.createStandardBindGroup(
+                layout,
+                coordTexture,
+                coordSampler,
+                outputBuffer,
+                dimensionsBuffer,
+                paramBuffer,
+                ctx.prevTexture,
+                ctx.prevSampler
+              );
 
-      // Execute shader (with iterations if needed)
-      if (hasIterations) {
-        const textureA = device.createTexture({
-          size: [superDimensions.width, superDimensions.height],
-          format: 'rgba32float',
-          usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST,
-          label: 'feedback-texture-A-hires',
-        });
-        const textureB = device.createTexture({
-          size: [superDimensions.width, superDimensions.height],
-          format: 'rgba32float',
-          usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST,
-          label: 'feedback-texture-B-hires',
-        });
-
-        const zeroData = new Float32Array(superDimensions.width * superDimensions.height * 4);
-        device.queue.writeTexture(
-          { texture: textureB },
-          zeroData,
-          { bytesPerRow: superDimensions.width * 16 },
-          [superDimensions.width, superDimensions.height]
-        );
-
-        const prevSampler = device.createSampler({
-          addressModeU: 'mirror-repeat',
-          addressModeV: 'mirror-repeat',
-          magFilter: 'nearest',
-          minFilter: 'nearest',
-        });
-
-        for (let iter = 0; iter < iterations; iter++) {
-          const isLastIter = iter === iterations - 1;
-          const currentTexture = iter % 2 === 0 ? textureA : textureB;
-          const prevTexture = iter % 2 === 0 ? textureB : textureA;
-
+              const executionContext = createExecutionContext(pipeline, bindGroup, workgroups, outputBuffer);
+              await executor.execute(executionContext);
+            }
+          );
+        } else {
           const bindGroup = pipelineBuilder.createStandardBindGroup(
             layout,
             coordTexture,
             coordSampler,
             outputBuffer,
             dimensionsBuffer,
-            paramBuffer,
-            prevTexture,
-            prevSampler
+            paramBuffer
           );
 
           const executionContext = createExecutionContext(pipeline, bindGroup, workgroups, outputBuffer);
           await executor.execute(executionContext);
-
-          if (!isLastIter) {
-            const commandEncoder = device.createCommandEncoder();
-            commandEncoder.copyBufferToTexture(
-              { buffer: outputBuffer, bytesPerRow: superDimensions.width * 16 },
-              { texture: currentTexture },
-              [superDimensions.width, superDimensions.height]
-            );
-            device.queue.submit([commandEncoder.finish()]);
-            await device.queue.onSubmittedWorkDone();
-          }
         }
 
-        textureA.destroy();
-        textureB.destroy();
-      } else {
-        const bindGroup = pipelineBuilder.createStandardBindGroup(
-          layout,
-          coordTexture,
-          coordSampler,
-          outputBuffer,
-          dimensionsBuffer,
-          paramBuffer
-        );
-
-        const executionContext = createExecutionContext(pipeline, bindGroup, workgroups, outputBuffer);
-        await executor.execute(executionContext);
-      }
-
-      // CRITICAL: Wait for shader execution to complete
-      await context.getDevice().queue.onSubmittedWorkDone();
-
-      // Check for GPU errors during shader execution
-      const execMemError = await device.popErrorScope();
-      if (execMemError) {
-        throw new Error(`GPU out-of-memory during shader execution: ${execMemError.message}`);
-      }
-      const execValError = await device.popErrorScope();
-      if (execValError) {
-        throw new Error(`GPU validation error during shader execution: ${execValError.message}`);
-      }
+        // CRITICAL: Wait for shader execution to complete
+        await context.getDevice().queue.onSubmittedWorkDone();
+      });
 
       // Apply gamma/contrast post-processing
-      device.pushErrorScope('validation');
-      device.pushErrorScope('out-of-memory');
-
-      const processedBuffer = await postProcessor.applyGammaContrast(
-        outputBuffer,
-        superDimensions,
-        globalParams.gamma,
-        globalParams.contrast
-      );
-
-      const postMemError = await device.popErrorScope();
-      if (postMemError) {
-        throw new Error(`GPU out-of-memory during post-processing: ${postMemError.message}`);
-      }
-      const postValError = await device.popErrorScope();
-      if (postValError) {
-        throw new Error(`GPU validation error during post-processing: ${postValError.message}`);
-      }
+      const processedBuffer = await withGPUErrorScope(device, 'post-processing', async () => {
+        return await postProcessor.applyGammaContrast(
+          outputBuffer,
+          superDimensions,
+          globalParams.gamma,
+          globalParams.contrast
+        );
+      });
 
       // Downsample to final resolution
-      device.pushErrorScope('validation');
-      device.pushErrorScope('out-of-memory');
-
-      const downsampledBuffer = resultRenderer.downsample(
-        processedBuffer,
-        superDimensions,
-        hiResDimensions,
-        supersampleFactor
-      );
-
-      const downMemError = await device.popErrorScope();
-      if (downMemError) {
-        throw new Error(`GPU out-of-memory during downsampling: ${downMemError.message}`);
-      }
-      const downValError = await device.popErrorScope();
-      if (downValError) {
-        throw new Error(`GPU validation error during downsampling: ${downValError.message}`);
-      }
+      const downsampledBuffer = await withGPUErrorScope(device, 'downsampling', async () => {
+        return resultRenderer.downsample(
+          processedBuffer,
+          superDimensions,
+          hiResDimensions,
+          supersampleFactor
+        );
+      });
 
       // Wait for all GPU work to complete before downloading
       await context.getDevice().queue.onSubmittedWorkDone();
@@ -800,7 +725,7 @@ export const App: Component = () => {
 
       addLog(`Downloaded "${filename}"`, 'success');
     } catch (err) {
-      const errorMessage = err instanceof Error ? err.message : 'Unknown error';
+      const errorMessage = getErrorMessage(err);
       addLog(`Download failed: ${errorMessage}`, 'error');
       console.error('Download error:', err);
     }
@@ -818,7 +743,7 @@ export const App: Component = () => {
       return;
     }
 
-    const mashupCount = 6;
+    const mashupCount = EVOLUTION_CONFIG.mashupCount;
     const currentTemp = temperature(); // Use current temperature
     const currentModel = model(); // Use current model
     const parentNames = selectedShaders.map(s => s.name);
@@ -869,7 +794,7 @@ export const App: Component = () => {
         }
       }, 100);
     } catch (error) {
-      const errorMsg = error instanceof Error ? error.message : 'Unknown mashup error';
+      const errorMsg = getErrorMessage(error, 'Unknown mashup error');
       addLog(`Mashup failed: ${errorMsg}`, 'error');
       console.error('Mashup error:', error);
     } finally {
@@ -883,6 +808,96 @@ export const App: Component = () => {
 
   const handleClearMashupResults = () => {
     evolutionStore.clearMashupResults();
+  };
+
+  /**
+   * Render a preview of a shader at a specific size
+   */
+  const renderShaderPreview = async (shader: ShaderDefinition, size: number): Promise<ImageData | null> => {
+    try {
+      const dimensions = { width: size, height: size };
+
+      // Create coordinate texture and sampler at preview resolution
+      const coordTexture = await coordGenerator.createCoordinateTexture(
+        dimensions,
+        context,
+        1.0, // Default zoom
+        0.0, // Default pan X
+        0.0  // Default pan Y
+      );
+      const coordSampler = coordGenerator.createCoordinateSampler(context);
+
+      // Use shader defaults for parameters
+      const paramValues = new Map(shader.parameters.map(p => [p.name, p.default]));
+
+      const prep = await prepareShader(
+        compiler,
+        bufferManager,
+        parameterManager,
+        pipelineBuilder,
+        executor,
+        () => shader.iterations || 1,
+        () => paramValues,
+        {
+          shader,
+          shaderId: shader.id,
+          dimensions,
+          labelSuffix: '-preview',
+          parameterValues: paramValues,
+          measureCompileTime: false,
+        }
+      );
+
+      const { outputBuffer, dimensionsBuffer, paramBuffer, layout, pipeline, workgroups, iterations, hasIterations } = prep;
+
+      // Execute shader
+      const device = context.getDevice();
+      await withGPUErrorScope(device, 'preview render', async () => {
+        if (hasIterations) {
+          await executeFeedbackLoop(
+            device,
+            dimensions,
+            iterations,
+            outputBuffer,
+            '-preview',
+            async (ctx) => {
+              const bindGroup = pipelineBuilder.createStandardBindGroup(
+                layout,
+                coordTexture,
+                coordSampler,
+                outputBuffer,
+                dimensionsBuffer,
+                paramBuffer,
+                ctx.prevTexture,
+                ctx.prevSampler
+              );
+
+              const executionContext = createExecutionContext(pipeline, bindGroup, workgroups, outputBuffer);
+              await executor.execute(executionContext);
+            }
+          );
+        } else {
+          const bindGroup = pipelineBuilder.createStandardBindGroup(
+            layout,
+            coordTexture,
+            coordSampler,
+            outputBuffer,
+            dimensionsBuffer,
+            paramBuffer
+          );
+
+          const executionContext = createExecutionContext(pipeline, bindGroup, workgroups, outputBuffer);
+          await executor.execute(executionContext);
+        }
+      });
+
+      // Read result
+      const imageData = await resultRenderer.bufferToImageData(outputBuffer, dimensions);
+      return imageData;
+    } catch (error) {
+      console.error('Preview render failed:', error);
+      return null;
+    }
   };
 
   // Note: We don't need a reactive effect to re-execute all shaders on every store change.
@@ -928,6 +943,9 @@ export const App: Component = () => {
             onMashupToggle={handleMashupToggle}
             onDeleteShader={handleDeleteShader}
             onDownloadShader={handleDownloadShader}
+            onRenderPreview={renderShaderPreview}
+            onShaderEdit={handleShaderEdit}
+            onShaderCompile={handleShaderCompile}
           />
 
           <Show when={evolutionStore.getMashupResults().length > 0}>
@@ -936,6 +954,7 @@ export const App: Component = () => {
               parentNames={evolutionStore.getMashupParentNames()}
               onPromote={handlePromoteChild}
               onClear={handleClearMashupResults}
+              onRenderPreview={renderShaderPreview}
             />
           </Show>
 

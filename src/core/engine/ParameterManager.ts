@@ -15,27 +15,69 @@ export class ParameterManager {
   }
 
   /**
-   * Parse parameters from shader source code
-   * Format: // @param name: min, max, default, step
-   * Example: // @param frequency: 0.0, 10.0, 1.0, 0.1
+   * Parse parameters from Params struct in shader source code
+   *
+   * New format (inline comments on struct fields):
+   *   struct Params {
+   *     frequency: f32,  // min=0.1, max=10.0, default=2.0, step=0.1
+   *     amplitude: f32,  // min=0.0, max=5.0, default=1.0
+   *   }
+   *
+   * Comments are optional. If not present, reasonable defaults are used:
+   * - min: 0.0
+   * - max: 10.0
+   * - default: 1.0
+   * - step: 0.01
    *
    * @param shaderSource - WGSL shader source code
    * @returns Array of parsed parameters
    */
   public parseParameters(shaderSource: string): ShaderParameter[] {
     const parameters: ShaderParameter[] = [];
-    const paramRegex = /\/\/\s*@param\s+(\w+)\s*:\s*([\d.-]+)\s*,\s*([\d.-]+)\s*,\s*([\d.-]+)(?:\s*,\s*([\d.-]+))?/g;
+
+    // Find the Params struct definition
+    const structRegex = /struct\s+Params\s*\{([^}]+)\}/s;
+    const structMatch = shaderSource.match(structRegex);
+
+    if (!structMatch) {
+      return parameters; // No Params struct found
+    }
+
+    const structBody = structMatch[1];
+
+    // Parse each field in the struct
+    // Match: fieldName: type, // optional comment with min=X, max=Y, default=Z, step=W
+    const fieldRegex = /(\w+)\s*:\s*f32\s*,?\s*(?:\/\/\s*(.*))?/g;
 
     let match;
-    while ((match = paramRegex.exec(shaderSource)) !== null) {
-      const [, name, minStr, maxStr, defaultStr, stepStr] = match;
+    while ((match = fieldRegex.exec(structBody)) !== null) {
+      const [, name, comment] = match;
+
+      // Default values
+      let min = 0.0;
+      let max = 10.0;
+      let defaultValue = 1.0;
+      let step = 0.01;
+
+      // Parse inline comment if present
+      if (comment) {
+        const minMatch = comment.match(/min\s*=\s*([-\d.]+)/);
+        const maxMatch = comment.match(/max\s*=\s*([-\d.]+)/);
+        const defaultMatch = comment.match(/(?:default|def)\s*=\s*([-\d.]+)/);
+        const stepMatch = comment.match(/step\s*=\s*([-\d.]+)/);
+
+        if (minMatch) min = parseFloat(minMatch[1]);
+        if (maxMatch) max = parseFloat(maxMatch[1]);
+        if (defaultMatch) defaultValue = parseFloat(defaultMatch[1]);
+        if (stepMatch) step = parseFloat(stepMatch[1]);
+      }
 
       const param: ShaderParameter = {
         name,
-        min: parseFloat(minStr),
-        max: parseFloat(maxStr),
-        default: parseFloat(defaultStr),
-        step: stepStr ? parseFloat(stepStr) : 0.01,
+        min,
+        max,
+        default: defaultValue,
+        step,
       };
 
       // Validate parameter

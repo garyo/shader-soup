@@ -4,6 +4,7 @@
 
 import { type Component, For, Show, createSignal } from 'solid-js';
 import { ChangelogModal } from './ChangelogModal';
+import { HoverPreview } from './HoverPreview';
 import type { ShaderDefinition } from '@/types/core';
 import { resultStore } from '@/stores';
 
@@ -12,10 +13,14 @@ interface MashupResultsProps {
   parentNames: string[];
   onPromote: (mashup: ShaderDefinition) => void;
   onClear: () => void;
+  onRenderPreview: (shader: ShaderDefinition, size: number) => Promise<ImageData | null>;
 }
 
 export const MashupResults: Component<MashupResultsProps> = (props) => {
   const [changelogShader, setChangelogShader] = createSignal<ShaderDefinition | null>(null);
+  const [previewShader, setPreviewShader] = createSignal<ShaderDefinition | null>(null);
+  const [previewPosition, setPreviewPosition] = createSignal({ x: 0, y: 0 });
+  let hoverTimer: number | undefined;
 
   return (
     <div class="mashup-results">
@@ -64,6 +69,24 @@ export const MashupResults: Component<MashupResultsProps> = (props) => {
                         width={r().imageData.width}
                         height={r().imageData.height}
                         class="mashup-canvas"
+                        onMouseEnter={(e) => {
+                          setPreviewPosition({ x: e.clientX, y: e.clientY });
+                          // Clear any existing timer
+                          if (hoverTimer !== undefined) {
+                            clearTimeout(hoverTimer);
+                          }
+                          // Set a 1 second delay before showing preview
+                          hoverTimer = setTimeout(() => {
+                            setPreviewShader(mashup);
+                          }, 1000) as unknown as number;
+                        }}
+                        onMouseLeave={() => {
+                          // Clear timer if mouse leaves before delay expires
+                          if (hoverTimer !== undefined) {
+                            clearTimeout(hoverTimer);
+                            hoverTimer = undefined;
+                          }
+                        }}
                       />
                     );
                   }}
@@ -105,6 +128,17 @@ export const MashupResults: Component<MashupResultsProps> = (props) => {
           shaderName={changelogShader()!.name}
           changelog={changelogShader()!.changelog!}
           onClose={() => setChangelogShader(null)}
+        />
+      </Show>
+
+      {/* Hover Preview */}
+      <Show when={previewShader()}>
+        <HoverPreview
+          shader={previewShader()!}
+          mouseX={previewPosition().x}
+          mouseY={previewPosition().y}
+          onRender={props.onRenderPreview}
+          onClose={() => setPreviewShader(null)}
         />
       </Show>
     </div>

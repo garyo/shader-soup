@@ -38,7 +38,8 @@ export const Toolbar: Component<ToolbarProps> = (props) => {
           onChange={handleModelChange}
         >
           <option value="claude-haiku-4-5">Haiku 4.5 (fast)</option>
-          <option value="claude-sonnet-4-5">Sonnet 4.5 (better)</option>
+          <option value="claude-sonnet-4-5">Sonnet 4.5 (balanced)</option>
+          <option value="claude-opus-4-5">Opus 4.5 (best)</option>
         </select>
       </div>
 
@@ -53,7 +54,7 @@ export const Toolbar: Component<ToolbarProps> = (props) => {
           min="0"
           max="1"
           step="0.05"
-          prop:value={props.temperature}
+          value={props.temperature}
           onInput={handleSliderChange}
         />
       </div>

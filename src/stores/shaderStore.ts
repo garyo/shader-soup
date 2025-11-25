@@ -250,6 +250,11 @@ export const shaderStore = {
       newValues.set(id, newParamValues);
       return newValues;
     });
+
+    // Save to localStorage if this is a promoted shader
+    if (state.promotedShaderIds.has(id)) {
+      savePromotedShadersToStorage();
+    }
   },
 
   /**

@@ -12,13 +12,27 @@ interface EvolutionStatusProps {
 
 export const EvolutionStatus: Component<EvolutionStatusProps> = (props) => {
   const progressPercent = () => {
-    const childProgress = (props.progress.currentChild / props.progress.totalChildren) * 100;
-    return Math.min(childProgress, 100);
+    // Calculate progress considering both children and experiments per child
+    // Total work = totalChildren * (maxExperiments + debugging + compilation)
+    // For simplicity, we'll approximate as: totalChildren * maxExperiments
+    const totalSteps = props.progress.totalChildren * props.progress.maxExperiments;
+
+    // Completed children contribute fully (all their experiments are done)
+    const completedSteps = (props.progress.currentChild - 1) * props.progress.maxExperiments;
+
+    // Current child contributes based on current experiment
+    const currentChildSteps = props.progress.currentExperiment;
+
+    const overallProgress = (completedSteps + currentChildSteps) / totalSteps * 100;
+    return Math.min(overallProgress, 100);
   };
 
   const statusText = () => {
     switch (props.progress.status) {
       case 'mutating':
+        if (props.progress.currentExperiment > 0) {
+          return `Experimenting (${props.progress.currentExperiment}/${props.progress.maxExperiments})...`;
+        }
         return 'Mutating shader...';
       case 'debugging':
         return `Debugging (attempt ${props.progress.debugAttempt}/${props.progress.maxDebugAttempts})`;

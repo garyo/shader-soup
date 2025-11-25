@@ -1,8 +1,5 @@
 // Feedback Loop Example - Diffusion with decay
 // @iterations 10
-// @param decay: 0.9, 1.0, 0.98, 0.01
-// @param diffusion: 0.0, 0.5, 0.15, 0.01
-// @param inject: 0.0, 0.5, 0.05, 0.01
 
 struct Dimensions {
   width: u32,
@@ -10,9 +7,9 @@ struct Dimensions {
 }
 
 struct Params {
-  decay: f32,
-  diffusion: f32,
-  inject: f32,
+  decay: f32,  // min=0.9, max=1.0, default=0.98, step=0.01
+  diffusion: f32,  // min=0.0, max=0.5, default=0.15, step=0.01
+  inject: f32,  // min=0.0, max=0.5, default=0.05, step=0.01
 }
 
 @group(0) @binding(0) var coordTexture: texture_2d<f32>;

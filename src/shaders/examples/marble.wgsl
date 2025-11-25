@@ -1,27 +1,19 @@
 // Marble Texture
 // Uses turbulence and domain warping for marble-like patterns
 
-// @param scale: 1.0, 20.0, 8.0, 0.5
-// @param turbulenceAmount: 0.0, 10.0, 5.0, 0.5
-// @param veiningScale: 1.0, 50.0, 15.0, 1.0
-// @param warpAmount: 0.0, 3.0, 1.0, 0.1
-// @param darkColor: 0.0, 1.0, 0.2, 0.05
-// @param lightColor: 0.0, 1.0, 0.9, 0.05
-// @param colorShift: 0.0, 6.28, 0.0, 0.1
-
 struct Dimensions {
   width: u32,
   height: u32,
 }
 
 struct Params {
-  scale: f32,
-  turbulenceAmount: f32,
-  veiningScale: f32,
-  warpAmount: f32,
-  darkColor: f32,
-  lightColor: f32,
-  colorShift: f32,
+  scale: f32,             // min=1.0, max=20.0, default=8.0, step=0.5
+  turbulenceAmount: f32,  // min=0.0, max=10.0, default=5.0, step=0.5
+  veiningScale: f32,      // min=1.0, max=50.0, default=15.0, step=1.0
+  warpAmount: f32,        // min=0.0, max=3.0, default=1.0, step=0.1
+  darkColor: f32,         // min=0.0, max=1.0, default=0.2, step=0.05
+  lightColor: f32,        // min=0.0, max=1.0, default=0.9, step=0.05
+  colorShift: f32,        // min=0.0, max=6.28, default=0.0, step=0.1
 }
 
 @group(0) @binding(0) var coordTexture: texture_2d<f32>;

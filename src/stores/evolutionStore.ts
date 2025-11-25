@@ -13,6 +13,8 @@ export interface EvolutionProgress {
   status: EvolutionStatus;
   currentChild: number;
   totalChildren: number;
+  currentExperiment: number; // 0 = not experimenting, 1-3 = active experiment number
+  maxExperiments: number; // Usually 3
   debugAttempt: number;
   maxDebugAttempts: number;
   lastError?: string;
@@ -69,7 +71,8 @@ export const evolutionStore = {
     shaderId: string,
     shaderName: string,
     childrenCount: number = state.defaultChildrenCount,
-    temperature: number = state.defaultTemperature
+    temperature: number = state.defaultTemperature,
+    maxExperiments: number = 3
   ): void {
     const progress: EvolutionProgress = {
       shaderId,
@@ -77,6 +80,8 @@ export const evolutionStore = {
       status: 'mutating',
       currentChild: 0,
       totalChildren: childrenCount,
+      currentExperiment: 0,
+      maxExperiments: maxExperiments,
       debugAttempt: 0,
       maxDebugAttempts: 5,
       startTime: new Date(),

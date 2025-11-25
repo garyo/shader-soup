@@ -1,10 +1,6 @@
 // Checkerboard Pattern
 // Creates a customizable checkerboard pattern
 
-// @param scale: 1.0, 50.0, 10.0, 1.0
-// @param rotation: 0.0, 6.28, 0.0, 0.1
-// @param color1Red: 0.0, 1.0, 0.0, 0.01
-// @param color2Red: 0.0, 1.0, 1.0, 0.01
 
 struct Dimensions {
   width: u32,
@@ -12,10 +8,10 @@ struct Dimensions {
 }
 
 struct Params {
-  scale: f32,
-  rotation: f32,
-  color1Red: f32,
-  color2Red: f32,
+  scale: f32,  // min=1.0, max=50.0, default=10.0, step=1.0
+  rotation: f32,  // min=0.0, max=6.28, default=0.0, step=0.1
+  color1Red: f32,  // min=0.0, max=1.0, default=0.0, step=0.01
+  color2Red: f32,  // min=0.0, max=1.0, default=1.0, step=0.01
 }
 
 @group(0) @binding(0) var coordTexture: texture_2d<f32>;

@@ -6,14 +6,24 @@ import { WebGPUContext } from './WebGPUContext';
 import { ShaderCompilationError } from '@/types/errors';
 import type { CompilationResult, CompilationError } from '@/types/core';
 import noiseLibrary from '@/shaders/utils/noise.wgsl?raw';
+import utilsLibrary from '@/shaders/utils/utils.wgsl?raw';
 
 export class ShaderCompiler {
   private context: WebGPUContext;
   private compilationCache: Map<string, GPUShaderModule> = new Map();
   private noiseLibrarySource: string = noiseLibrary;
+  private utilsLibrarySource: string = utilsLibrary;
 
   constructor(context: WebGPUContext) {
     this.context = context;
+  }
+
+  /**
+   * Get the library prefix that's prepended to user shader code
+   * @returns The complete library prefix string
+   */
+  private getLibraryPrefix(): string {
+    return `${this.noiseLibrarySource}\n\n// UTILS\n\n${this.utilsLibrarySource}\n\n// ===== USER SHADER CODE =====\n\n`;
   }
 
   /**
@@ -28,12 +38,9 @@ export class ShaderCompiler {
     source: string,
     label?: string,
     useCache: boolean = true,
-    includeNoiseLib: boolean = true
   ): Promise<CompilationResult> {
-    // Prepend noise library if requested
-    const finalSource = includeNoiseLib
-      ? `${this.noiseLibrarySource}\n\n// ===== USER SHADER CODE =====\n\n${source}`
-      : source;
+    // Prepend noise & utils libs
+    const finalSource = this.getLibraryPrefix() + source;
 
     // Check cache if enabled
     if (useCache) {
@@ -285,6 +292,7 @@ export class ShaderCompiler {
         compute: {
           module: module,
           entryPoint: 'main',
+          constants: {},
         },
       });
 
@@ -296,6 +304,23 @@ export class ShaderCompiler {
       errors.push(errorMessage);
       return errors;
     }
+  }
+
+  /**
+   * Detect if shader source declares a binding that should be included in hasParams/hasInputTexture
+   * This helps catch mismatches where LLM declares @binding(4) but didn't add // @param comments
+   *
+   * @param source - User shader source code (without prepended libraries)
+   * @returns Object indicating which optional bindings are declared
+   */
+  public detectOptionalBindings(source: string): { hasParamsBinding: boolean; hasInputTextureBinding: boolean } {
+    // Check if shader declares @binding(4) for params
+    const hasParamsBinding = /@group\(0\)\s+@binding\(4\)/.test(source);
+
+    // Check if shader declares @binding(5) for input texture
+    const hasInputTextureBinding = /@group\(0\)\s+@binding\(5\)/.test(source);
+
+    return { hasParamsBinding, hasInputTextureBinding };
   }
 
   /**
@@ -380,6 +405,17 @@ export class ShaderCompiler {
    */
   public getCacheSize(): number {
     return this.compilationCache.size;
+  }
+
+  /**
+   * Get the line offset for user code (number of newlines before user code starts)
+   * This is used to adjust line numbers in compilation errors
+   */
+  public getUserCodeLineOffset(): number {
+    // Count newlines in the library prefix (using the exact same string used in compile())
+    const prefix = this.getLibraryPrefix();
+    const newlineCount = (prefix.match(/\n/g) || []).length;
+    return newlineCount;
   }
 
   /**

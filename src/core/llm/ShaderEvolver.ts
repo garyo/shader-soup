@@ -33,6 +33,19 @@ export interface EvolutionOptions {
   maxDebugAttempts?: number;
   model?: string;
   batchSize?: number;
+  onProgress?: (update: ProgressUpdate) => void;
+  experimentsPerChild?: number;
+  mashupExperiments?: number;
+}
+
+export interface ProgressUpdate {
+  type: 'child' | 'experiment' | 'debug';
+  currentChild?: number;
+  totalChildren?: number;
+  currentExperiment?: number;
+  maxExperiments?: number;
+  debugAttempt?: number;
+  maxDebugAttempts?: number;
 }
 
 export interface EvolutionResult {
@@ -40,6 +53,17 @@ export interface EvolutionResult {
   shader?: ShaderDefinition;
   error?: string;
   debugAttempts?: number;
+}
+
+/**
+ * Configuration for tool conversation loop
+ */
+interface ToolConversationConfig {
+  operationType: 'mutation' | 'mashup';
+  count: number;
+  maxRenders: number;
+  temperature: number;
+  logPrefix: string; // e.g., "Batch mutation" or "Batch mashup"
 }
 
 export class ShaderEvolver {
@@ -54,6 +78,9 @@ export class ShaderEvolver {
   private executor: Executor;
   private resultRenderer: ResultRenderer;
   private coordGenerator: CoordinateGenerator;
+  private onProgress?: (update: ProgressUpdate) => void;
+  private experimentsPerChild: number;
+  private mashupExperiments: number;
 
   constructor(
     apiKey: string,
@@ -71,6 +98,9 @@ export class ShaderEvolver {
     this.parameterManager = parameterManager;
     this.memory = new SessionMemory();
     this.maxDebugAttempts = options?.maxDebugAttempts ?? 5;
+    this.onProgress = options?.onProgress;
+    this.experimentsPerChild = options?.experimentsPerChild ?? 3;
+    this.mashupExperiments = options?.mashupExperiments ?? 3;
     this.webgpuContext = webgpuContext;
     this.bufferManager = bufferManager;
     this.pipelineBuilder = new PipelineBuilder(webgpuContext);
@@ -121,20 +151,24 @@ export class ShaderEvolver {
     shaderSource: string,
     size: number = 256
   ): Promise<string> {
+    const totalStart = performance.now();
     try {
       const device = this.webgpuContext.getDevice();
       const dimensions = { width: size, height: size };
 
       // Compile the shader
+      const compileStart = performance.now();
       const compileResult = await this.compiler.compile(shaderSource, 'visual-feedback', false);
+      const compileTime = performance.now() - compileStart;
 
       if (!compileResult.success || !compileResult.module) {
         const errorMsg = ShaderCompiler.formatErrors(compileResult.errors);
         throw new Error(`Shader compilation failed:\n${errorMsg}`);
       }
 
-      // Parse parameters
+      // Parse parameters and detect bindings
       const parameters = this.parameterManager.parseParameters(shaderSource);
+      const bindingDetection = this.compiler.detectOptionalBindings(shaderSource);
 
       // Create coordinate texture and sampler
       const coordTexture = await this.coordGenerator.createCoordinateTexture(
@@ -165,20 +199,42 @@ export class ShaderEvolver {
         'visual-feedback-dims'
       );
 
-      // Create parameter buffer if needed
+      // Create parameter buffer if needed (using binding detection, not just parsed params)
       let paramBuffer: GPUBuffer | undefined;
-      if (parameters.length > 0) {
-        paramBuffer = this.parameterManager.createParameterBuffer(parameters);
+      const hasParamComments = parameters.length > 0;
+
+      if (bindingDetection.hasParamsBinding) {
+        if (hasParamComments) {
+          // Normal case: shader has @param comments, use those values
+          paramBuffer = this.parameterManager.createParameterBuffer(parameters);
+        } else {
+          // Mismatch case: shader declares @binding(4) but no @param comments
+          console.warn(`[Visual Feedback] Shader declares @binding(4) but has no // @param comments. Creating dummy params buffer.`);
+          // Create a larger dummy buffer to handle typical Params structs
+          // WebGPU requires uniform buffers to be multiples of 16 bytes
+          // Using 256 bytes should cover most cases (16 float parameters)
+          paramBuffer = this.bufferManager.createBuffer(
+            {
+              size: 256,
+              usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+              label: 'visual-feedback-dummy-params',
+            },
+            false
+          );
+        }
+      } else if (hasParamComments) {
+        console.warn(`[Visual Feedback] Shader has // @param comments but no @binding(4) declaration. Parameters will be ignored.`);
       }
 
       // Build pipeline with unique label to avoid caching conflicts
-      const hasParams = parameters.length > 0;
+      const hasParams = bindingDetection.hasParamsBinding; // Use actual binding detection
       const hasIterations = false; // Don't support feedback textures in preview
       const uniqueLabel = `visual-feedback-${crypto.randomUUID().slice(0, 8)}`;
 
       // Push GPU error scopes to catch validation errors
       device.pushErrorScope('validation');
       let errorScopePushed = true;
+      let execTime = 0;
 
       try {
         const layout = this.pipelineBuilder.createStandardLayout(hasParams, hasIterations, uniqueLabel);
@@ -201,6 +257,7 @@ export class ShaderEvolver {
         );
 
         // Execute shader
+        const execStart = performance.now();
         const workgroups = this.executor.calculateWorkgroups(size, size);
         const createExecutionContext = (pipeline: GPUComputePipeline, bindGroup: GPUBindGroup, workgroups: any, outputBuffer: GPUBuffer) => ({
           pipeline,
@@ -211,6 +268,7 @@ export class ShaderEvolver {
 
         const executionContext = createExecutionContext(pipeline, bindGroup, workgroups, outputBuffer);
         await this.executor.execute(executionContext);
+        execTime = performance.now() - execStart;
 
         // Check for GPU validation errors
         const validationError = await device.popErrorScope();
@@ -231,15 +289,24 @@ export class ShaderEvolver {
       }
 
       // Convert output buffer to base64 PNG
+      const encodeStart = performance.now();
       const dataURL = await this.resultRenderer.bufferToDataURL(
         outputBuffer,
         dimensions,
         'image/png',
         0.7 // Lower quality to reduce size
       );
+      const encodeTime = performance.now() - encodeStart;
 
       // Extract base64 data (remove "data:image/png;base64," prefix)
       const base64Data = dataURL.split(',')[1];
+
+      const totalTime = performance.now() - totalStart;
+
+      // Log timing breakdown if render is slow (>500ms)
+      if (totalTime > 500) {
+        console.warn(`[RENDER] Slow render detected (${totalTime.toFixed(1)}ms): compile=${compileTime.toFixed(1)}ms, exec=${execTime.toFixed(1)}ms, encode=${encodeTime.toFixed(1)}ms`);
+      }
 
       return base64Data;
     } catch (error) {
@@ -266,6 +333,15 @@ export class ShaderEvolver {
       for (let i = 0; i < count; i++) {
         try {
           console.log(`\n=== Generating child ${i + 1}/${count} ===`);
+
+          // Report progress: starting child
+          this.onProgress?.({
+            type: 'child',
+            currentChild: i + 1,
+            totalChildren: count,
+            currentExperiment: 0,
+            maxExperiments: this.experimentsPerChild,
+          });
 
           // Generate a single mutation with memory context
           const mutatedShaders = await this.batchMutateShader(
@@ -358,6 +434,207 @@ export class ShaderEvolver {
     }
   }
 
+
+  // ==================== Tool Call Handling Helpers ====================
+
+  /**
+   * Find a specific tool use in a message
+   */
+  private findToolUse(message: Anthropic.Message, toolName: string): Anthropic.ToolUseBlock | undefined {
+    return message.content.find(
+      (block): block is Anthropic.ToolUseBlock =>
+        block.type === 'tool_use' && block.name === toolName
+    );
+  }
+
+  /**
+   * Log LLM API call with timing and token usage
+   */
+  private logLLMCall(
+    message: Anthropic.Message,
+    elapsed: number,
+    config: ToolConversationConfig,
+    extraInfo?: Record<string, any>
+  ): void {
+    console.log(`[LLM] ${config.logPrefix} call:`, {
+      model: message.model,
+      temperature: config.temperature,
+      count: config.count,
+      elapsed_ms: elapsed.toFixed(0),
+      input_tokens: message.usage.input_tokens,
+      output_tokens: message.usage.output_tokens,
+      total_tokens: message.usage.input_tokens + message.usage.output_tokens,
+      stop_reason: message.stop_reason,
+      ...extraInfo,
+    });
+  }
+
+  /**
+   * Handle the case when max renders is reached - sends tool_result to force final output
+   */
+  private handleMaxRendersReached(
+    messages: Anthropic.MessageParam[],
+    message: Anthropic.Message,
+    renderToolUse: Anthropic.ToolUseBlock,
+    config: ToolConversationConfig
+  ): void {
+    console.warn(`Max render iterations (${config.maxRenders}) reached, forcing final output`);
+
+    messages.push({
+      role: 'assistant',
+      content: message.content,
+    });
+
+    messages.push({
+      role: 'user',
+      content: [
+        {
+          type: 'tool_result',
+          tool_use_id: renderToolUse.id,
+          content: `You've reached the maximum number of experimental renders (${config.maxRenders}). Please now use the shader_output tool to provide your ${config.count} final ${config.operationType === 'mashup' ? 'mashup ' : ''}variations. Choose the most visually interesting experiments you've seen so far, or refine them further if needed. If you found good results in your experiments, use those. Focus on visual interest and avoid boring or repetitive patterns.`,
+        },
+      ],
+    });
+  }
+
+  /**
+   * Handle a render_shader tool request - renders the shader and returns the result
+   */
+  private async handleRenderRequest(
+    messages: Anthropic.MessageParam[],
+    message: Anthropic.Message,
+    renderToolUse: Anthropic.ToolUseBlock,
+    renderCount: number,
+    maxRenders: number,
+    operationType: 'mutation' | 'mashup'
+  ): Promise<void> {
+    const input = renderToolUse.input as { shader: string; notes?: string };
+    const typeLabel = operationType === 'mashup' ? 'mashup' : 'shader';
+    console.log(`[LLM] Rendering experimental ${typeLabel} ${renderCount}/${maxRenders}${input.notes ? `: ${input.notes}` : ''}`);
+
+    // Report progress: starting experiment
+    this.onProgress?.({
+      type: 'experiment',
+      currentExperiment: renderCount,
+      maxExperiments: maxRenders,
+    });
+
+    // Render the shader with timing (128x128 for speed)
+    const renderStart = performance.now();
+    const renderResult = await this.renderShaderToBase64WithErrors(input.shader, 128);
+    const renderElapsed = performance.now() - renderStart;
+    console.log(`[RENDER] Tool render completed in ${renderElapsed.toFixed(1)}ms (${renderResult.success ? 'success' : 'failed'})`);
+
+    // Build tool result with image or error
+    const toolResultContent: Array<Anthropic.TextBlockParam | Anthropic.ImageBlockParam> = [];
+
+    if (renderResult.success && renderResult.imageBase64) {
+      toolResultContent.push({
+        type: 'image',
+        source: {
+          type: 'base64',
+          media_type: 'image/png',
+          data: renderResult.imageBase64,
+        },
+      });
+      toolResultContent.push({
+        type: 'text',
+        text: `Above is the rendered output of your experimental ${typeLabel} shader.`,
+      });
+      console.log(`[LLM] Rendered image size: ${Math.round(renderResult.imageBase64.length / 1024)}KB`);
+    } else {
+      toolResultContent.push({
+        type: 'text',
+        text: `Failed to render shader:\n${renderResult.error}\n\nPlease fix these errors and try again.`,
+      });
+      console.log(`[LLM] Render failed: ${renderResult.error}`);
+    }
+
+    // Continue conversation with the render result
+    messages.push({
+      role: 'assistant',
+      content: message.content,
+    });
+    messages.push({
+      role: 'user',
+      content: [
+        {
+          type: 'tool_result',
+          tool_use_id: renderToolUse.id,
+          content: toolResultContent,
+        },
+      ],
+    });
+  }
+
+  /**
+   * Generic tool conversation loop handler
+   * Handles render_shader tool for experimentation and shader_output for final results
+   */
+  private async handleToolConversation<T extends { shader: string; changelog?: string } | { name?: string; shader: string; changelog?: string }>(
+    system: string,
+    messages: Anthropic.MessageParam[],
+    model: string,
+    config: ToolConversationConfig
+  ): Promise<T[]> {
+    let renderCount = 0;
+
+    while (true) {
+      const startTime = performance.now();
+      const message = await this.anthropic.messages.create({
+        model: model,
+        max_tokens: 16384,
+        temperature: config.temperature,
+        tools: [renderShaderTool, shaderObjectTool],
+        system: [
+          {
+            type: "text",
+            text: system,
+            cache_control: { type: "ephemeral" }
+          }
+        ],
+        messages,
+      });
+      const elapsed = performance.now() - startTime;
+
+      // Log timing and token usage
+      this.logLLMCall(message, elapsed, config);
+
+      // Check if the model used a tool
+      if (message.stop_reason === 'tool_use') {
+        // Check for render_shader tool use (experimentation)
+        const renderToolUse = this.findToolUse(message, 'render_shader');
+
+        if (renderToolUse) {
+          if (renderCount >= config.maxRenders) {
+            this.handleMaxRendersReached(messages, message, renderToolUse, config);
+            continue;
+          }
+
+          renderCount++;
+          await this.handleRenderRequest(messages, message, renderToolUse, renderCount, config.maxRenders, config.operationType);
+          continue;
+        }
+
+        // Check for shader_output tool use (final output)
+        const outputToolUse = this.findToolUse(message, 'shader_output');
+
+        if (outputToolUse) {
+          console.log(`Success: extracting ${config.count} final ${config.operationType === 'mashup' ? 'mashup ' : ''}shaders after ${renderCount} experimental renders`);
+          const input = outputToolUse.input as { shaders: T[] };
+          if (config.operationType === 'mashup') {
+            console.log(`Mashup shaders: ${input.shaders.length} generated`);
+          }
+          return input.shaders;
+        }
+      }
+
+      // If we get here without finding the tool use, something went wrong
+      throw new Error(`Unexpected stop reason: ${message.stop_reason}`);
+    }
+  }
+
+  // ==================== End Tool Call Handling Helpers ====================
 
   /**
    * Evolve mashup shaders sequentially with memory
@@ -487,11 +764,11 @@ export class ShaderEvolver {
     promptParams: MashupPromptParams,
     model: string
   ): Promise<Array<{ name?: string; shader: string; changelog?: string }>> {
-    const prompt = createMashupPrompt(promptParams);
+    const { system, user } = createMashupPrompt(promptParams);
 
-    // Add memory context to the prompt
+    // Add memory context to the user prompt
     const memorySummary = this.memory.getMemorySummary(10);
-    const fullPrompt = `${prompt}\n\n${memorySummary}`;
+    const fullUserPrompt = `${user}\n\n${memorySummary}`;
 
     console.log(`Batch mashup with ${model}, params ${JSON.stringify({ count: promptParams.count, temperature: promptParams.temperature })}, memory entries: ${this.memory.getEntryCount()}`);
 
@@ -499,10 +776,10 @@ export class ShaderEvolver {
     console.log(`Rendering ${promptParams.shaders.length} parent shaders for visual feedback...`);
     const contentBlocks: Anthropic.MessageParam['content'] = [];
 
-    // Render each parent shader
+    // Render each parent shader (128x128 for speed)
     for (let i = 0; i < promptParams.shaders.length; i++) {
       const shader = promptParams.shaders[i];
-      const imageBase64 = await this.renderShaderToBase64(shader.source, 256);
+      const imageBase64 = await this.renderShaderToBase64(shader.source, 128);
 
       if (imageBase64) {
         contentBlocks.push({
@@ -524,7 +801,7 @@ export class ShaderEvolver {
     // Add the main prompt
     contentBlocks.push({
       type: 'text',
-      text: fullPrompt,
+      text: fullUserPrompt,
     });
 
     // Create messages array for conversation
@@ -535,130 +812,19 @@ export class ShaderEvolver {
       },
     ];
 
-    // Loop to handle tool calls (including render_shader for experimentation)
-    let renderCount = 0;
-    const maxRenders = 4; // Limit iterations to prevent infinite loops
-
-    while (true) {
-      const startTime = performance.now();
-      const message = await this.anthropic.messages.create({
-        model: model,
-        max_tokens: 16384, // Increased for multiple shaders
-        temperature: promptParams.temperature,
-        tools: [renderShaderTool, shaderObjectTool],
-        messages,
-      });
-      const elapsed = performance.now() - startTime;
-
-      // Log timing and token usage
-      console.log(`[LLM] Batch mashup call:`, {
-        model: model,
-        temperature: promptParams.temperature,
+    // Use common tool conversation handler
+    return await this.handleToolConversation<{ name?: string; shader: string; changelog?: string }>(
+      system,
+      messages,
+      model,
+      {
+        operationType: 'mashup',
         count: promptParams.count,
-        parent_count: promptParams.shaders.length,
-        elapsed_ms: elapsed.toFixed(0),
-        input_tokens: message.usage.input_tokens,
-        output_tokens: message.usage.output_tokens,
-        total_tokens: message.usage.input_tokens + message.usage.output_tokens,
-        stop_reason: message.stop_reason,
-      });
-
-      // Check if the model used the tool
-      if (message.stop_reason === 'tool_use') {
-        // Check for render_shader tool use (experimentation)
-        const renderToolUse = message.content.find(
-          (block): block is Anthropic.ToolUseBlock =>
-            block.type === 'tool_use' && block.name === 'render_shader'
-        );
-
-        if (renderToolUse) {
-          if (renderCount >= maxRenders) {
-            console.warn(`Max render iterations (${maxRenders}) reached, forcing final output`);
-            // Need to provide a tool_result for the tool_use, then ask for final output
-            messages.push({
-              role: 'assistant',
-              content: message.content,
-            });
-            messages.push({
-              role: 'user',
-              content: [
-                {
-                  type: 'tool_result',
-                  tool_use_id: renderToolUse.id,
-                  content: `You've reached the maximum number of experimental renders (${maxRenders}). Please now use the shader_output tool to provide your ${promptParams.count} final mashup variations based on what you've learned.`,
-                },
-              ],
-            });
-            continue;
-          }
-
-          renderCount++;
-          const input = renderToolUse.input as { shader: string; notes?: string };
-          console.log(`[LLM] Rendering experimental mashup ${renderCount}/${maxRenders}${input.notes ? `: ${input.notes}` : ''}`);
-
-          // Render the shader
-          const renderResult = await this.renderShaderToBase64WithErrors(input.shader, 256);
-
-          // Build tool result with image or error
-          const toolResultContent: Array<Anthropic.TextBlockParam | Anthropic.ImageBlockParam> = [];
-
-          if (renderResult.success && renderResult.imageBase64) {
-            toolResultContent.push({
-              type: 'image',
-              source: {
-                type: 'base64',
-                media_type: 'image/png',
-                data: renderResult.imageBase64,
-              },
-            });
-            toolResultContent.push({
-              type: 'text',
-              text: 'Above is the rendered output of your experimental mashup shader.',
-            });
-            console.log(`[LLM] Rendered image size: ${Math.round(renderResult.imageBase64.length / 1024)}KB`);
-          } else {
-            toolResultContent.push({
-              type: 'text',
-              text: `Failed to render shader:\n${renderResult.error}\n\nPlease fix these errors and try again.`,
-            });
-            console.log(`[LLM] Render failed: ${renderResult.error}`);
-          }
-
-          // Continue conversation with the render result
-          messages.push({
-            role: 'assistant',
-            content: message.content,
-          });
-          messages.push({
-            role: 'user',
-            content: [
-              {
-                type: 'tool_result',
-                tool_use_id: renderToolUse.id,
-                content: toolResultContent,
-              },
-            ],
-          });
-          continue; // Continue the loop to get next message
-        }
-
-        // Check for shader_output tool use (final output)
-        const outputToolUse = message.content.find(
-          (block): block is Anthropic.ToolUseBlock =>
-            block.type === 'tool_use' && block.name === 'shader_output'
-        );
-
-        if (outputToolUse) {
-          console.log(`Success: extracting ${promptParams.count} final mashup shaders after ${renderCount} experimental renders`);
-          const input = outputToolUse.input as { shaders: Array<{ name?: string; shader: string, changelog?: string }> };
-          console.log(`Mashup shaders: ${input.shaders.length} generated`);
-          return input.shaders;
-        }
+        maxRenders: this.mashupExperiments,
+        temperature: promptParams.temperature,
+        logPrefix: 'Batch mashup',
       }
-
-      // If we get here without finding the tool use, something went wrong
-      throw new Error(`Unexpected stop reason: ${message.stop_reason}`);
-    }
+    );
   }
 
   /**
@@ -677,17 +843,17 @@ export class ShaderEvolver {
       preserveParams: false,
     };
 
-    const prompt = createBatchMutationPrompt(promptParams);
+    const { system, user } = createBatchMutationPrompt(promptParams);
 
-    // Add memory context to the prompt
+    // Add memory context to the user prompt
     const memorySummary = this.memory.getMemorySummary(10);
-    const fullPrompt = `${prompt}\n\n${memorySummary}`;
+    const fullUserPrompt = `${user}\n\n${memorySummary}`;
 
     console.log(`Batch mutating with ${model}, params ${JSON.stringify(promptParams)}, memory entries: ${this.memory.getEntryCount()}`);
 
-    // Render parent shader to image for visual feedback
+    // Render parent shader to image for visual feedback (128x128 for speed)
     console.log('Rendering parent shader for visual feedback...');
-    const parentImageBase64 = await this.renderShaderToBase64(shaderSource, 256);
+    const parentImageBase64 = await this.renderShaderToBase64(shaderSource, 128);
 
     // Create messages array for conversation with image
     const contentBlocks: Anthropic.MessageParam['content'] = [];
@@ -712,7 +878,7 @@ export class ShaderEvolver {
     // Add the main prompt
     contentBlocks.push({
       type: 'text',
-      text: fullPrompt,
+      text: fullUserPrompt,
     });
 
     const messages: Anthropic.MessageParam[] = [
@@ -722,130 +888,19 @@ export class ShaderEvolver {
       },
     ];
 
-    // Loop to handle tool calls (including render_shader for experimentation)
-    let renderCount = 0;
-    const maxRenders = 4; // Limit iterations to prevent infinite loops
-
-    while (true) {
-      const startTime = performance.now();
-      const message = await this.anthropic.messages.create({
-        model: model,
-        max_tokens: 16384, // Increased for multiple shaders
-        temperature,
-        tools: [renderShaderTool, shaderObjectTool],
-        messages,
-      });
-      const elapsed = performance.now() - startTime;
-
-      // Log timing and token usage
-      console.log(`[LLM] Batch mutation call:`, {
-        model: model,
-        temperature,
+    // Use common tool conversation handler
+    return await this.handleToolConversation<{ shader: string; changelog?: string }>(
+      system,
+      messages,
+      model,
+      {
+        operationType: 'mutation',
         count,
-        elapsed_ms: elapsed.toFixed(0),
-        input_tokens: message.usage.input_tokens,
-        output_tokens: message.usage.output_tokens,
-        total_tokens: message.usage.input_tokens + message.usage.output_tokens,
-        stop_reason: message.stop_reason,
-      });
-
-      // console.log(`Got response with stop_reason: ${message.stop_reason}`);
-
-      // Check if the model used the tool
-      if (message.stop_reason === 'tool_use') {
-        // Check for render_shader tool use (experimentation)
-        const renderToolUse = message.content.find(
-          (block): block is Anthropic.ToolUseBlock =>
-            block.type === 'tool_use' && block.name === 'render_shader'
-        );
-
-        if (renderToolUse) {
-          if (renderCount >= maxRenders) {
-            console.warn(`Max render iterations (${maxRenders}) reached, forcing final output`);
-            // Need to provide a tool_result for the tool_use, then ask for final output
-            messages.push({
-              role: 'assistant',
-              content: message.content,
-            });
-            messages.push({
-              role: 'user',
-              content: [
-                {
-                  type: 'tool_result',
-                  tool_use_id: renderToolUse.id,
-                  content: `You've reached the maximum number of experimental renders (${maxRenders}). Please now use the shader_output tool to provide your ${count} final variations based on what you've learned.`,
-                },
-              ],
-            });
-            continue;
-          }
-
-          renderCount++;
-          const input = renderToolUse.input as { shader: string; notes?: string };
-          console.log(`[LLM] Rendering experimental shader ${renderCount}/${maxRenders}${input.notes ? `: ${input.notes}` : ''}`);
-
-          // Render the shader
-          const renderResult = await this.renderShaderToBase64WithErrors(input.shader, 256);
-
-          // Build tool result with image or error
-          const toolResultContent: Array<Anthropic.TextBlockParam | Anthropic.ImageBlockParam> = [];
-
-          if (renderResult.success && renderResult.imageBase64) {
-            toolResultContent.push({
-              type: 'image',
-              source: {
-                type: 'base64',
-                media_type: 'image/png',
-                data: renderResult.imageBase64,
-              },
-            });
-            toolResultContent.push({
-              type: 'text',
-              text: 'Above is the rendered output of your experimental shader.',
-            });
-            console.log(`[LLM] Rendered image size: ${Math.round(renderResult.imageBase64.length / 1024)}KB`);
-          } else {
-            toolResultContent.push({
-              type: 'text',
-              text: `Failed to render shader:\n${renderResult.error}\n\nPlease fix these errors and try again.`,
-            });
-            console.log(`[LLM] Render failed: ${renderResult.error}`);
-          }
-
-          // Continue conversation with the render result
-          messages.push({
-            role: 'assistant',
-            content: message.content,
-          });
-          messages.push({
-            role: 'user',
-            content: [
-              {
-                type: 'tool_result',
-                tool_use_id: renderToolUse.id,
-                content: toolResultContent,
-              },
-            ],
-          });
-          continue; // Continue the loop to get next message
-        }
-
-        // Check for shader_output tool use (final output)
-        const outputToolUse = message.content.find(
-          (block): block is Anthropic.ToolUseBlock =>
-            block.type === 'tool_use' && block.name === 'shader_output'
-        );
-
-        if (outputToolUse) {
-          console.log(`Success: extracting ${count} final shaders after ${renderCount} experimental renders`);
-          const input = outputToolUse.input as { shaders: Array<{ shader: string, changelog?: string }> };
-          return input.shaders;
-        }
+        maxRenders: this.experimentsPerChild,
+        temperature,
+        logPrefix: 'Batch mutation',
       }
-
-      // If we get here without finding the tool use, something went wrong
-      throw new Error(`Unexpected stop reason: ${message.stop_reason}`);
-    }
+    );
   }
 
 
@@ -925,14 +980,14 @@ export class ShaderEvolver {
       attempt,
     };
 
-    const prompt = createDebugPrompt(promptParams);
+    const { system, user } = createDebugPrompt(promptParams);
     console.log(`Debug attempt ${attempt}, asking LLM to fix errors`);
 
     // Create messages array for conversation
     const messages: Anthropic.MessageParam[] = [
       {
         role: 'user',
-        content: prompt,
+        content: user,
       },
     ];
 
@@ -945,6 +1000,13 @@ export class ShaderEvolver {
         temperature: 0.3, // Lower temperature for debugging
         tools: [debugShaderTool],
         tool_choice: { type: "tool", name: "debug_shader_output" },
+        system: [
+          {
+            type: "text",
+            text: system,
+            cache_control: { type: "ephemeral" }
+          }
+        ],
         messages,
       });
       const elapsed = performance.now() - startTime;

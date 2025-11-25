@@ -1,10 +1,6 @@
 // Sine Wave Pattern (Texture-based Coordinates)
 // Creates colorful sine wave patterns using texture coordinate lookups
 
-// @param frequency: 1.0, 20.0, 5.0, 0.5
-// @param amplitude: 0.1, 2.0, 0.5, 0.1
-// @param phase: 0.0, 6.28, 0.0, 0.1
-// @param colorShift: 0.0, 6.28, 0.0, 0.1
 
 struct Dimensions {
   width: u32,
@@ -12,10 +8,10 @@ struct Dimensions {
 }
 
 struct Params {
-  frequency: f32,
-  amplitude: f32,
-  phase: f32,
-  colorShift: f32,
+  frequency: f32,  // min=1.0, max=20.0, default=5.0, step=0.5
+  amplitude: f32,  // min=0.1, max=2.0, default=0.5, step=0.1
+  phase: f32,  // min=0.0, max=6.28, default=0.0, step=0.1
+  colorShift: f32,  // min=0.0, max=6.28, default=0.0, step=0.1
 }
 
 @group(0) @binding(0) var coordTexture: texture_2d<f32>;

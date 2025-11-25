@@ -18,6 +18,8 @@ export interface SliderProps {
 
 export const Slider: Component<SliderProps> = (props) => {
   const [localValue, setLocalValue] = createSignal(props.value);
+  const [isEditing, setIsEditing] = createSignal(false);
+  const [editText, setEditText] = createSignal('');
   const scale = props.scale || 'linear';
 
   createEffect(() => {
@@ -66,6 +68,35 @@ export const Slider: Component<SliderProps> = (props) => {
     return scale === 'log' ? valueToSliderPosition(localValue()) : localValue();
   });
 
+  const handleValueClick = () => {
+    setEditText(localValue().toString());
+    setIsEditing(true);
+  };
+
+  const handleValueChange = (e: Event) => {
+    const target = e.target as HTMLInputElement;
+    setEditText(target.value);
+  };
+
+  const handleValueBlur = () => {
+    const numValue = parseFloat(editText());
+    if (!isNaN(numValue)) {
+      // Clamp to min/max
+      const clampedValue = Math.max(props.min, Math.min(props.max, numValue));
+      setLocalValue(clampedValue);
+      props.onChange(clampedValue);
+    }
+    setIsEditing(false);
+  };
+
+  const handleValueKeyDown = (e: KeyboardEvent) => {
+    if (e.key === 'Enter') {
+      (e.target as HTMLInputElement).blur();
+    } else if (e.key === 'Escape') {
+      setIsEditing(false);
+    }
+  };
+
   return (
     <div class="parameter-slider">
       <span class="parameter-name">{props.name}</span>
@@ -74,11 +105,25 @@ export const Slider: Component<SliderProps> = (props) => {
         min={sliderMin}
         max={sliderMax}
         step={sliderStep}
-        prop:value={sliderValue()}
+        value={sliderValue()}
         onInput={handleChange}
         class="slider"
       />
-      <span class="parameter-value">{formatValue(localValue())}</span>
+      {isEditing() ? (
+        <input
+          type="text"
+          value={editText()}
+          onInput={handleValueChange}
+          onBlur={handleValueBlur}
+          onKeyDown={handleValueKeyDown}
+          class="parameter-value-input"
+          autofocus
+        />
+      ) : (
+        <span class="parameter-value" onClick={handleValueClick}>
+          {formatValue(localValue())}
+        </span>
+      )}
     </div>
   );
 };

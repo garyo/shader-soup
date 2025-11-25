@@ -1,9 +1,6 @@
 // Grayscale Image Filter
 // Converts input image to grayscale with adjustable intensity
 
-// @param intensity: 0.0, 1.0, 1.0, 0.01
-// @param contrast: 0.5, 2.0, 1.0, 0.05
-// @param brightness: -0.5, 0.5, 0.0, 0.01
 
 struct Dimensions {
   width: u32,
@@ -11,9 +8,9 @@ struct Dimensions {
 }
 
 struct Params {
-  intensity: f32,
-  contrast: f32,
-  brightness: f32,
+  intensity: f32,  // min=0.0, max=1.0, default=1.0, step=0.01
+  contrast: f32,  // min=0.5, max=2.0, default=1.0, step=0.05
+  brightness: f32,  // min=-0.5, max=0.5, default=0.0, step=0.01
 }
 
 @group(0) @binding(0) var coordTexture: texture_2d<f32>;

@@ -1,27 +1,19 @@
 // Perlin Clouds
 // Demonstrates Perlin noise and FBM for cloud-like patterns
 
-// @param scale: 1.0, 20.0, 5.0, 0.5
-// @param octaves: 1.0, 8.0, 4.0, 1.0
-// @param lacunarity: 1.5, 3.0, 2.0, 0.1
-// @param gain: 0.1, 0.9, 0.5, 0.05
-// @param warpAmount: 0.0, 2.0, 0.3, 0.1
-// @param brightness: 0.0, 2.0, 1.0, 0.1
-// @param contrast: 0.5, 2.0, 1.2, 0.1
-
 struct Dimensions {
   width: u32,
   height: u32,
 }
 
 struct Params {
-  scale: f32,
-  octaves: f32,
-  lacunarity: f32,
-  gain: f32,
-  warpAmount: f32,
-  brightness: f32,
-  contrast: f32,
+  scale: f32,       // min=1.0, max=20.0, default=5.0, step=0.5
+  octaves: f32,     // min=1.0, max=8.0, default=4.0, step=1.0
+  lacunarity: f32,  // min=1.5, max=3.0, default=2.0, step=0.1
+  gain: f32,        // min=0.1, max=0.9, default=0.5, step=0.05
+  warpAmount: f32,  // min=0.0, max=2.0, default=0.3, step=0.1
+  brightness: f32,  // min=0.0, max=2.0, default=1.0, step=0.1
+  contrast: f32,    // min=0.5, max=2.0, default=1.2, step=0.1
 }
 
 @group(0) @binding(0) var coordTexture: texture_2d<f32>;
