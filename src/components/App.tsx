@@ -17,6 +17,7 @@ import { ParameterManager } from '@/core/engine/ParameterManager';
 import { PipelineBuilder } from '@/core/engine/PipelineBuilder';
 import { Executor, createExecutionContext } from '@/core/engine/Executor';
 import { GPUPostProcessor } from '@/core/engine/GPUPostProcessor';
+import { CanvasRenderer } from '@/core/engine/CanvasRenderer';
 import { CoordinateGenerator } from '@/core/input/CoordinateGenerator';
 import { ResultRenderer } from '@/core/output/ResultRenderer';
 import { PostProcessor } from '@/core/output/PostProcessor';
@@ -79,6 +80,7 @@ export const App: Component = () => {
   let resultRenderer: ResultRenderer;
   let postProcessor: PostProcessor;
   let gpuPostProcessor: GPUPostProcessor;
+  let canvasRenderer: CanvasRenderer;
   let shaderEvolver: ShaderEvolver;
 
   // GPU-only mode flag (set to true to eliminate CPU readback)
@@ -100,6 +102,7 @@ export const App: Component = () => {
       resultRenderer = new ResultRenderer(bufferManager, context);
       postProcessor = new PostProcessor(context, bufferManager);
       gpuPostProcessor = new GPUPostProcessor(context, compiler, bufferManager);
+      canvasRenderer = new CanvasRenderer(context);
 
       // Initialize LLM-based shader evolver
       const apiKey = import.meta.env.VITE_ANTHROPIC_API_KEY;
@@ -328,15 +331,18 @@ export const App: Component = () => {
       let imageData: ImageData;
       let postProcessTime = 0;
       let downsampleTime = 0;
+      let gpuTexture: GPUTexture | undefined;
 
       if (USE_GPU_ONLY_PATH) {
         // 🚀 GPU-ONLY PATH: Zero CPU readback
-        addLog('Using GPU-only rendering path (testing shader incrementally)', 'info');
+        addLog('Using GPU-only rendering path with WebGPU canvas display', 'info');
 
         // Apply gamma/contrast on GPU (texture → texture)
+        // Uses texture pooling to prevent flashing during parameter changes
         const postProcessStart = performance.now();
-        const processedTexture = await withGPUErrorScope(device, 'gpu-post-processing', async () => {
+        const processed = await withGPUErrorScope(device, 'gpu-post-processing', async () => {
           return await gpuPostProcessor.applyGammaContrast(
+            shaderId,  // For texture pooling
             outputTexture,
             superDimensions,
             globalParams.gamma,
@@ -344,6 +350,11 @@ export const App: Component = () => {
           );
         });
         postProcessTime = performance.now() - postProcessStart;
+
+        // Use display texture for WebGPU rendering (filterable)
+        gpuTexture = processed.displayTexture;
+        // Use storage texture for ImageData (rgba32float format expected by buffer copy)
+        const processedTexture = processed.storageTexture;
 
         // Copy processed texture to buffer (at supersample resolution)
         const copyStart = performance.now();
@@ -430,6 +441,7 @@ export const App: Component = () => {
         imageData,
         executionTime: totalTime,
         timestamp: new Date(),
+        gpuTexture,  // Include GPU texture for WebGPU canvas rendering
       });
 
       resultStore.clearError(shaderId);
@@ -582,6 +594,7 @@ export const App: Component = () => {
     if (confirm(`Delete shader "${shader.name}"? This cannot be undone.`)) {
       shaderStore.removePromotedShader(shaderId);
       resultStore.clearError(shaderId);
+      gpuPostProcessor.clearShaderTextures(shaderId); // Clean up pooled textures
       addLog(`Deleted shader "${shader.name}"`);
     }
   };

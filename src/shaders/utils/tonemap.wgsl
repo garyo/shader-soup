@@ -1,8 +1,8 @@
 // Tone Mapping Shader
-// Converts rgba32float HDR texture to canvas display format (rgba8unorm/bgra8unorm)
+// Converts rgba16float HDR texture to canvas display format (rgba8unorm/bgra8unorm)
 // Simple linear tone mapping for now, can be enhanced with better tone mapping curves
 
-@group(0) @binding(0) var inputTexture: texture_2d<f32>;  // rgba32float source
+@group(0) @binding(0) var inputTexture: texture_2d<f32>;  // rgba16float source
 @group(0) @binding(1) var outputTexture: texture_storage_2d<rgba8unorm, write>;  // Canvas format
 
 @compute @workgroup_size(8, 8)

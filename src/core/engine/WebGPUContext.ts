@@ -11,7 +11,8 @@ export class WebGPUContext {
   private initialized: boolean = false;
   private initializationPromise: Promise<void> | null = null;
   private canvasFormat: GPUTextureFormat = 'rgba8unorm';
-  private storageFormat: GPUTextureFormat = 'rgba32float'; // HDR-capable format (16 bytes/pixel, matches vec4<f32>)
+  private storageFormat: GPUTextureFormat = 'rgba32float'; // HDR-capable format for compute shaders (full precision)
+  private displayStorageFormat: GPUTextureFormat = 'rgba32float'; // For post-processing output (filterable if tier2)
   private supportsBgraStorage: boolean = false;
 
   private constructor() {
@@ -89,17 +90,19 @@ export class WebGPUContext {
       console.warn('[WebGPU] shader-f16 feature not available');
     }
 
-    // rgba32float is ALWAYS supported for storage textures (core WebGPU spec)
-    // rgba16float requires texture-formats-tier2 for canvas display (HDR)
-    this.storageFormat = 'rgba32float'; // Always use rgba32float for compute shader output
+    // Compute shaders: always use rgba32float for full precision
+    // Post-processing output: rgba16float when tier2 available (filterable, half memory), rgba32float otherwise
+    this.storageFormat = 'rgba32float'; // Always use rgba32float for compute shader precision
 
     if (this.adapter.features.has('texture-formats-tier2')) {
       features.push('texture-formats-tier2');
-      this.canvasFormat = 'rgba16float'; // HDR display
-      console.log('[WebGPU] texture-formats-tier2 available - HDR enabled (rgba16float canvas)');
+      this.displayStorageFormat = 'rgba16float'; // Filterable for smooth downsampling
+      this.canvasFormat = 'rgba16float';  // HDR display
+      console.log('[WebGPU] tier2: compute=rgba32float (precision), display=rgba16float (filterable), canvas=rgba16float (HDR)');
     } else {
-      this.canvasFormat = 'rgba8unorm'; // SDR fallback
-      console.log('[WebGPU] Using rgba8unorm canvas (SDR), rgba32float storage (always supported)');
+      this.displayStorageFormat = 'rgba32float'; // Fallback: unfilterable but supported
+      this.canvasFormat = 'rgba8unorm';   // SDR fallback
+      console.log('[WebGPU] No tier2: compute=rgba32float, display=rgba32float (unfilterable), canvas=rgba8unorm (SDR)');
     }
 
     // Request device with higher buffer size limits for high-res rendering
@@ -241,10 +244,17 @@ export class WebGPUContext {
   }
 
   /**
-   * Get the storage texture format for compute shader output (HDR-capable)
+   * Get the storage texture format for compute shader output (HDR-capable, full precision)
    */
   public getStorageFormat(): GPUTextureFormat {
     return this.storageFormat;
+  }
+
+  /**
+   * Get the storage texture format for display/post-processing output (filterable when tier2 available)
+   */
+  public getDisplayStorageFormat(): GPUTextureFormat {
+    return this.displayStorageFormat;
   }
 
   /**

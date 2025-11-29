@@ -2,7 +2,7 @@
  * Shader Card - Display shader result with parameter controls
  */
 
-import { type Component, createEffect, For, Show, createSignal } from 'solid-js';
+import { type Component, createEffect, For, Show, createSignal, onCleanup } from 'solid-js';
 import { ParameterSlider } from './ParameterSlider';
 import { IterationSlider } from './IterationSlider';
 import { GlobalParametersComponent } from './GlobalParameters';
@@ -39,9 +39,43 @@ export const ShaderCard: Component<ShaderCardProps> = (props) => {
   const [showCodeModal, setShowCodeModal] = createSignal(false);
   const [showChangelogModal, setShowChangelogModal] = createSignal(false);
 
+  // Persistent canvas renderer - survives re-renders (store outside reactive scope)
+  const rendererState: { current: any | null } = { current: null };
+
   // Draw result to canvas when it changes
-  createEffect(() => {
+  createEffect(async () => {
     if (props.result && canvasRef) {
+      // Match canvas resolution to its actual display size (prevents browser downsampling artifacts)
+      const displayWidth = canvasRef.clientWidth;
+      const displayHeight = canvasRef.clientHeight;
+      if (displayWidth > 0 && displayHeight > 0) {
+        canvasRef.width = displayWidth;
+        canvasRef.height = displayHeight;
+      }
+      // Try WebGPU rendering first (zero CPU readback)
+      if (props.result.gpuTexture) {
+        try {
+          // Lazy import and initialize renderer once
+          if (!rendererState.current) {
+            const { getWebGPUContext } = await import('@/core/engine/WebGPUContext');
+            const { CanvasRenderer } = await import('@/core/engine/CanvasRenderer');
+
+            const context = await getWebGPUContext();
+            rendererState.current = new CanvasRenderer(context);
+            rendererState.current.configureCanvas(canvasRef); // Configure once
+          }
+
+          // Render to canvas (reuses configured context)
+          await rendererState.current.renderToCanvas(props.result.gpuTexture);
+          return; // Success - WebGPU path used
+        } catch (err) {
+          console.warn('WebGPU canvas rendering failed, falling back to 2D:', err);
+          rendererState.current = null; // Reset on error
+          // Fall through to 2D canvas
+        }
+      }
+
+      // Fallback: 2D canvas with ImageData
       const ctx = canvasRef.getContext('2d');
       if (ctx) {
         ctx.putImageData(props.result.imageData, 0, 0);

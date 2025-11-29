@@ -56,6 +56,7 @@ export interface ShaderResult {
   executionTime: number;
   timestamp: Date;
   error?: string;
+  gpuTexture?: GPUTexture;  // Optional: for WebGPU direct rendering (zero CPU readback)
 }
 
 /**

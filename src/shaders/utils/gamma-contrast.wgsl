@@ -1,8 +1,9 @@
 // GPU-based Gamma and Contrast Post-Processing
-// Processes HDR textures (rgba32float) without CPU readback
+// Input: rgba32float from compute shader (high precision)
+// Output: rgba16float for display (filterable, HDR) when tier2 available, else rgba32float
 
-@group(0) @binding(0) var inputTexture: texture_2d<f32>;        // rgba32float input
-@group(0) @binding(1) var outputTexture: texture_storage_2d<rgba32float, write>;  // rgba32float output
+@group(0) @binding(0) var inputTexture: texture_2d<f32>;        // rgba32float input (unfilterable)
+@group(0) @binding(1) var outputTexture: texture_storage_2d<rgba16float, write>;  // rgba16float output (format replaced at runtime)
 @group(0) @binding(2) var<uniform> dimensions: vec2<u32>;
 @group(0) @binding(3) var<uniform> params: vec2<f32>; // x=gamma, y=contrast
 
