@@ -16,6 +16,7 @@ import { BufferManager } from '@/core/engine/BufferManager';
 import { ParameterManager } from '@/core/engine/ParameterManager';
 import { PipelineBuilder } from '@/core/engine/PipelineBuilder';
 import { Executor, createExecutionContext } from '@/core/engine/Executor';
+import { GPUPostProcessor } from '@/core/engine/GPUPostProcessor';
 import { CoordinateGenerator } from '@/core/input/CoordinateGenerator';
 import { ResultRenderer } from '@/core/output/ResultRenderer';
 import { PostProcessor } from '@/core/output/PostProcessor';
@@ -77,7 +78,11 @@ export const App: Component = () => {
   let coordGenerator: CoordinateGenerator;
   let resultRenderer: ResultRenderer;
   let postProcessor: PostProcessor;
+  let gpuPostProcessor: GPUPostProcessor;
   let shaderEvolver: ShaderEvolver;
+
+  // GPU-only mode flag (set to true to eliminate CPU readback)
+  const USE_GPU_ONLY_PATH = true;
 
   // Initialize WebGPU and load example shaders
   onMount(async () => {
@@ -94,6 +99,7 @@ export const App: Component = () => {
       coordGenerator = new CoordinateGenerator();
       resultRenderer = new ResultRenderer(bufferManager, context);
       postProcessor = new PostProcessor(context, bufferManager);
+      gpuPostProcessor = new GPUPostProcessor(context, compiler, bufferManager);
 
       // Initialize LLM-based shader evolver
       const apiKey = import.meta.env.VITE_ANTHROPIC_API_KEY;
@@ -256,6 +262,7 @@ export const App: Component = () => {
         parameterManager,
         pipelineBuilder,
         executor,
+        context,
         (id) => shaderStore.getIterationValue(id),
         (id) => shaderStore.getParameterValues(id),
         {
@@ -268,7 +275,7 @@ export const App: Component = () => {
         }
       );
 
-      const { outputBuffer, dimensionsBuffer, paramBuffer, layout, pipeline, workgroups, iterations, hasIterations, compileTime } = prep;
+      const { outputTexture, dimensionsBuffer, paramBuffer, layout, pipeline, workgroups, iterations, hasIterations, compileTime } = prep;
       const startExec = performance.now();
 
       // Execute shader with GPU error scope handling
@@ -280,7 +287,7 @@ export const App: Component = () => {
             device,
             superDimensions,
             iterations,
-            outputBuffer,
+            outputTexture,
             '',
             async (ctx) => {
               // Create bind group with prevFrame texture from feedback loop
@@ -288,7 +295,7 @@ export const App: Component = () => {
                 layout,
                 coordTexture,
                 coordSampler,
-                outputBuffer,
+                outputTexture,
                 dimensionsBuffer,
                 paramBuffer,
                 ctx.prevTexture,
@@ -296,7 +303,7 @@ export const App: Component = () => {
               );
 
               // Execute compute shader
-              const executionContext = createExecutionContext(pipeline, bindGroup, workgroups, outputBuffer);
+              const executionContext = createExecutionContext(pipeline, bindGroup, workgroups, outputTexture);
               await executor.execute(executionContext);
             }
           );
@@ -306,37 +313,104 @@ export const App: Component = () => {
             layout,
             coordTexture,
             coordSampler,
-            outputBuffer,
+            outputTexture,
             dimensionsBuffer,
             paramBuffer
           );
 
-          const executionContext = createExecutionContext(pipeline, bindGroup, workgroups, outputBuffer);
+          const executionContext = createExecutionContext(pipeline, bindGroup, workgroups, outputTexture);
           await executor.execute(executionContext);
         }
       });
 
       const execTime = performance.now() - startExec;
 
-      // Apply gamma/contrast post-processing (in linear RGB space)
-      const postProcessStart = performance.now();
-      const processedBuffer = await withGPUErrorScope(device, 'post-processing', async () => {
-        return await postProcessor.applyGammaContrast(
-          outputBuffer,
-          superDimensions,
-          globalParams.gamma,
-          globalParams.contrast
-        );
-      });
-      const postProcessTime = performance.now() - postProcessStart;
+      let imageData: ImageData;
+      let postProcessTime = 0;
+      let downsampleTime = 0;
 
-      // Downsample on GPU, then convert to ImageData
-      const downsampleStart = performance.now();
-      const imageData = await withGPUErrorScope(device, 'downsampling', async () => {
-        const downsampledBuffer = resultRenderer.downsample(processedBuffer, superDimensions, dimensions, supersampleFactor);
-        return await resultRenderer.bufferToImageData(downsampledBuffer, dimensions);
-      });
-      const downsampleTime = performance.now() - downsampleStart;
+      if (USE_GPU_ONLY_PATH) {
+        // 🚀 GPU-ONLY PATH: Zero CPU readback
+        addLog('Using GPU-only rendering path (testing shader incrementally)', 'info');
+
+        // Apply gamma/contrast on GPU (texture → texture)
+        const postProcessStart = performance.now();
+        const processedTexture = await withGPUErrorScope(device, 'gpu-post-processing', async () => {
+          return await gpuPostProcessor.applyGammaContrast(
+            outputTexture,
+            superDimensions,
+            globalParams.gamma,
+            globalParams.contrast
+          );
+        });
+        postProcessTime = performance.now() - postProcessStart;
+
+        // Copy processed texture to buffer (at supersample resolution)
+        const copyStart = performance.now();
+        const superSize = superDimensions.width * superDimensions.height * 4 * 4;
+        const superBuffer = bufferManager.createBuffer({
+          size: superSize,
+          usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST | GPUBufferUsage.COPY_SRC,
+          label: 'super-processed-buffer',
+        }, false);
+
+        const copyEncoder = device.createCommandEncoder();
+        copyEncoder.copyTextureToBuffer(
+          { texture: processedTexture },
+          { buffer: superBuffer, bytesPerRow: superDimensions.width * 16 },
+          { width: superDimensions.width, height: superDimensions.height }
+        );
+        device.queue.submit([copyEncoder.finish()]);
+        await device.queue.onSubmittedWorkDone();
+        const copyTime = performance.now() - copyStart;
+
+        // Downsample on GPU to final resolution
+        const downsampleStart = performance.now();
+        imageData = await withGPUErrorScope(device, 'downsampling', async () => {
+          const downsampledBuffer = resultRenderer.downsample(superBuffer, superDimensions, dimensions, supersampleFactor);
+          return await resultRenderer.bufferToImageData(downsampledBuffer, dimensions);
+        });
+        downsampleTime = performance.now() - downsampleStart;
+
+        addLog(`GPU pipeline: exec=${execTime.toFixed(1)}ms, post=${postProcessTime.toFixed(1)}ms, copy=${copyTime.toFixed(1)}ms, downsample=${downsampleTime.toFixed(1)}ms`, 'success');
+      } else {
+        // LEGACY PATH: Uses CPU readback (backward compatibility)
+        const outputSize = superDimensions.width * superDimensions.height * 4 * 4;
+        const outputBuffer = bufferManager.createBuffer({
+          size: outputSize,
+          usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST | GPUBufferUsage.COPY_SRC,
+          label: 'texture-copy-buffer',
+        }, false);
+
+        const copyEncoder = device.createCommandEncoder({ label: 'texture-to-buffer-copy' });
+        copyEncoder.copyTextureToBuffer(
+          { texture: outputTexture },
+          { buffer: outputBuffer, bytesPerRow: superDimensions.width * 16, offset: 0 },
+          { width: superDimensions.width, height: superDimensions.height }
+        );
+        device.queue.submit([copyEncoder.finish()]);
+        await device.queue.onSubmittedWorkDone();
+
+        const postProcessStart = performance.now();
+        const processedBuffer = await withGPUErrorScope(device, 'post-processing', async () => {
+          return await postProcessor.applyGammaContrast(
+            outputBuffer,
+            superDimensions,
+            globalParams.gamma,
+            globalParams.contrast
+          );
+        });
+        postProcessTime = performance.now() - postProcessStart;
+
+        const downsampleStart = performance.now();
+        imageData = await withGPUErrorScope(device, 'downsampling', async () => {
+          const downsampledBuffer = resultRenderer.downsample(processedBuffer, superDimensions, dimensions, supersampleFactor);
+          return await resultRenderer.bufferToImageData(downsampledBuffer, dimensions);
+        });
+        downsampleTime = performance.now() - downsampleStart;
+
+        addLog(`Legacy pipeline: exec=${execTime.toFixed(1)}ms, post=${postProcessTime.toFixed(1)}ms, downsample=${downsampleTime.toFixed(1)}ms`, 'success');
+      }
 
       const totalTime = (compileTime ?? 0) + execTime + postProcessTime + downsampleTime;
 
@@ -664,6 +738,7 @@ export const App: Component = () => {
         parameterManager,
         pipelineBuilder,
         executor,
+        context,
         (id) => shaderStore.getIterationValue(id),
         (id) => shaderStore.getParameterValues(id),
         {
@@ -675,7 +750,7 @@ export const App: Component = () => {
         }
       );
 
-      const { outputBuffer, dimensionsBuffer, paramBuffer, layout, pipeline, workgroups, iterations, hasIterations } = prep;
+      const { outputTexture, dimensionsBuffer, paramBuffer, layout, pipeline, workgroups, iterations, hasIterations } = prep;
 
       addLog(`Rendering at ${superDimensions.width}x${superDimensions.height}...`);
 
@@ -687,21 +762,21 @@ export const App: Component = () => {
             device,
             superDimensions,
             iterations,
-            outputBuffer,
+            outputTexture,
             'hires',
             async (ctx) => {
               const bindGroup = pipelineBuilder.createStandardBindGroup(
                 layout,
                 coordTexture,
                 coordSampler,
-                outputBuffer,
+                outputTexture,
                 dimensionsBuffer,
                 paramBuffer,
                 ctx.prevTexture,
                 ctx.prevSampler
               );
 
-              const executionContext = createExecutionContext(pipeline, bindGroup, workgroups, outputBuffer);
+              const executionContext = createExecutionContext(pipeline, bindGroup, workgroups, outputTexture);
               await executor.execute(executionContext);
             }
           );
@@ -710,18 +785,37 @@ export const App: Component = () => {
             layout,
             coordTexture,
             coordSampler,
-            outputBuffer,
+            outputTexture,
             dimensionsBuffer,
             paramBuffer
           );
 
-          const executionContext = createExecutionContext(pipeline, bindGroup, workgroups, outputBuffer);
+          const executionContext = createExecutionContext(pipeline, bindGroup, workgroups, outputTexture);
           await executor.execute(executionContext);
         }
 
         // CRITICAL: Wait for shader execution to complete
         await context.getDevice().queue.onSubmittedWorkDone();
       });
+
+      // Copy HDR texture to buffer for post-processing (temporary bridge for MVP)
+      // TODO: Update post-processor to work directly with textures
+      const outputSize = superDimensions.width * superDimensions.height * 4 * 4; // vec4<f32> = 16 bytes per pixel
+      const outputBuffer = bufferManager.createBuffer({
+        size: outputSize,
+        usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST | GPUBufferUsage.COPY_SRC,
+        label: 'texture-copy-buffer-hires',
+      }, false);
+
+      // Copy texture to buffer
+      const copyEncoder = device.createCommandEncoder({ label: 'texture-to-buffer-copy-hires' });
+      copyEncoder.copyTextureToBuffer(
+        { texture: outputTexture },
+        { buffer: outputBuffer, bytesPerRow: superDimensions.width * 16, offset: 0 }, // rgba32float = 16 bytes/pixel
+        { width: superDimensions.width, height: superDimensions.height }
+      );
+      device.queue.submit([copyEncoder.finish()]);
+      await device.queue.onSubmittedWorkDone();
 
       // Apply gamma/contrast post-processing
       const processedBuffer = await withGPUErrorScope(device, 'post-processing', async () => {
@@ -863,6 +957,7 @@ export const App: Component = () => {
         parameterManager,
         pipelineBuilder,
         executor,
+        context,
         () => shader.iterations || 1,
         () => paramValues,
         {
@@ -875,7 +970,7 @@ export const App: Component = () => {
         }
       );
 
-      const { outputBuffer, dimensionsBuffer, paramBuffer, layout, pipeline, workgroups, iterations, hasIterations } = prep;
+      const { outputTexture, dimensionsBuffer, paramBuffer, layout, pipeline, workgroups, iterations, hasIterations } = prep;
 
       // Execute shader
       const device = context.getDevice();
@@ -885,21 +980,21 @@ export const App: Component = () => {
             device,
             dimensions,
             iterations,
-            outputBuffer,
+            outputTexture,
             '-preview',
             async (ctx) => {
               const bindGroup = pipelineBuilder.createStandardBindGroup(
                 layout,
                 coordTexture,
                 coordSampler,
-                outputBuffer,
+                outputTexture,
                 dimensionsBuffer,
                 paramBuffer,
                 ctx.prevTexture,
                 ctx.prevSampler
               );
 
-              const executionContext = createExecutionContext(pipeline, bindGroup, workgroups, outputBuffer);
+              const executionContext = createExecutionContext(pipeline, bindGroup, workgroups, outputTexture);
               await executor.execute(executionContext);
             }
           );
@@ -908,15 +1003,33 @@ export const App: Component = () => {
             layout,
             coordTexture,
             coordSampler,
-            outputBuffer,
+            outputTexture,
             dimensionsBuffer,
             paramBuffer
           );
 
-          const executionContext = createExecutionContext(pipeline, bindGroup, workgroups, outputBuffer);
+          const executionContext = createExecutionContext(pipeline, bindGroup, workgroups, outputTexture);
           await executor.execute(executionContext);
         }
       });
+
+      // Copy HDR texture to buffer for result rendering
+      const outputSize = dimensions.width * dimensions.height * 4 * 4; // vec4<f32> = 16 bytes per pixel
+      const outputBuffer = bufferManager.createBuffer({
+        size: outputSize,
+        usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST | GPUBufferUsage.COPY_SRC,
+        label: 'texture-copy-buffer-preview',
+      }, false);
+
+      // Copy texture to buffer
+      const copyEncoder = device.createCommandEncoder({ label: 'texture-to-buffer-copy-preview' });
+      copyEncoder.copyTextureToBuffer(
+        { texture: outputTexture },
+        { buffer: outputBuffer, bytesPerRow: dimensions.width * 16, offset: 0 }, // rgba32float = 16 bytes/pixel
+        { width: dimensions.width, height: dimensions.height }
+      );
+      device.queue.submit([copyEncoder.finish()]);
+      await device.queue.onSubmittedWorkDone();
 
       // Read result
       const imageData = await resultRenderer.bufferToImageData(outputBuffer, dimensions);

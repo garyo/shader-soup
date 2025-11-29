@@ -167,12 +167,14 @@ export class PipelineBuilder {
           type: 'filtering',
         },
       },
-      // Binding 2: Output buffer (read-write storage)
+      // Binding 2: Output texture (rgba16float for HDR-capable rendering)
       {
         binding: 2,
         visibility: GPUShaderStage.COMPUTE,
-        buffer: {
-          type: 'storage',
+        storageTexture: {
+          access: 'write-only',
+          format: this.context.getStorageFormat() as GPUTextureFormat,
+          viewDimension: '2d',
         },
       },
       // Binding 3: Dimensions (uniform, always present)
@@ -224,7 +226,7 @@ export class PipelineBuilder {
    * @param layout - Bind group layout
    * @param coordTexture - Coordinate texture
    * @param coordSampler - Coordinate sampler
-   * @param outputBuffer - Output buffer
+   * @param outputTexture - Output texture (canvas texture or offscreen texture)
    * @param dimensionsBuffer - Dimensions buffer (always required)
    * @param paramBuffer - Optional parameter buffer
    * @param inputTexture - Optional input texture (for image processing)
@@ -236,7 +238,7 @@ export class PipelineBuilder {
     layout: GPUBindGroupLayout,
     coordTexture: GPUTexture,
     coordSampler: GPUSampler,
-    outputBuffer: GPUBuffer,
+    outputTexture: GPUTexture,
     dimensionsBuffer: GPUBuffer,
     paramBuffer?: GPUBuffer,
     inputTexture?: GPUTexture,
@@ -254,7 +256,7 @@ export class PipelineBuilder {
       },
       {
         binding: 2,
-        resource: { buffer: outputBuffer },
+        resource: outputTexture.createView(),
       },
       {
         binding: 3,

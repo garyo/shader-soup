@@ -180,16 +180,13 @@ export class ShaderEvolver {
       );
       const coordSampler = this.coordGenerator.createCoordinateSampler(this.webgpuContext);
 
-      // Create output buffer (vec4<f32> = 16 bytes per pixel)
-      const outputSize = size * size * 4 * 4;
-      const outputBuffer = this.bufferManager.createBuffer(
-        {
-          size: outputSize,
-          usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC | GPUBufferUsage.COPY_DST,
-          label: 'visual-feedback-output',
-        },
-        false
-      );
+      // Create output texture (HDR-capable)
+      const outputTexture = device.createTexture({
+        size: { width: size, height: size },
+        format: this.webgpuContext.getStorageFormat() as GPUTextureFormat,
+        usage: GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.COPY_SRC | GPUTextureUsage.TEXTURE_BINDING,
+        label: 'visual-feedback-output',
+      });
 
       // Create dimensions buffer
       const dimensionsData = new Uint32Array([size, size, 0, 0]);
@@ -251,7 +248,7 @@ export class ShaderEvolver {
           layout,
           coordTexture,
           coordSampler,
-          outputBuffer,
+          outputTexture,
           dimensionsBuffer,
           paramBuffer
         );
@@ -259,14 +256,8 @@ export class ShaderEvolver {
         // Execute shader
         const execStart = performance.now();
         const workgroups = this.executor.calculateWorkgroups(size, size);
-        const createExecutionContext = (pipeline: GPUComputePipeline, bindGroup: GPUBindGroup, workgroups: any, outputBuffer: GPUBuffer) => ({
-          pipeline,
-          bindGroup,
-          workgroups,
-          outputBuffer,
-        });
 
-        const executionContext = createExecutionContext(pipeline, bindGroup, workgroups, outputBuffer);
+        const executionContext = { pipeline, bindGroup, workgroups, outputBuffer: outputTexture };
         await this.executor.execute(executionContext);
         execTime = performance.now() - execStart;
 
@@ -287,6 +278,24 @@ export class ShaderEvolver {
         }
         throw error;
       }
+
+      // Copy HDR texture to buffer for result rendering
+      const outputSize = size * size * 4 * 4; // vec4<f32> = 16 bytes per pixel
+      const outputBuffer = this.bufferManager.createBuffer({
+        size: outputSize,
+        usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST | GPUBufferUsage.COPY_SRC,
+        label: 'evolver-texture-copy-buffer',
+      }, false);
+
+      // Copy texture to buffer
+      const copyEncoder = device.createCommandEncoder({ label: 'evolver-texture-to-buffer-copy' });
+      copyEncoder.copyTextureToBuffer(
+        { texture: outputTexture },
+        { buffer: outputBuffer, bytesPerRow: size * 16, offset: 0 }, // rgba32float = 16 bytes/pixel
+        { width: size, height: size }
+      );
+      device.queue.submit([copyEncoder.finish()]);
+      await device.queue.onSubmittedWorkDone();
 
       // Convert output buffer to base64 PNG
       const encodeStart = performance.now();

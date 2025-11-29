@@ -8,6 +8,7 @@ import type { BufferManager } from './BufferManager';
 import type { ParameterManager } from './ParameterManager';
 import type { PipelineBuilder } from './PipelineBuilder';
 import type { Executor } from './Executor';
+import type { WebGPUContext } from './WebGPUContext';
 import type { ShaderDefinition } from '@/types/core';
 
 /**
@@ -36,8 +37,8 @@ export interface ShaderPreparationOptions {
 export interface ShaderPreparationResult {
   /** Compiled shader module */
   shaderModule: GPUShaderModule;
-  /** Output buffer for shader results */
-  outputBuffer: GPUBuffer;
+  /** Output texture for shader results (rgba16float HDR) */
+  outputTexture: GPUTexture;
   /** Dimensions buffer */
   dimensionsBuffer: GPUBuffer;
   /** Parameter buffer (undefined if shader has no parameters) */
@@ -93,23 +94,22 @@ export async function prepareShader(
   parameterManager: ParameterManager,
   pipelineBuilder: PipelineBuilder,
   executor: Executor,
+  context: WebGPUContext,
   getIterationValue: (shaderId: string) => number | undefined,
   getParameterValues: (shaderId: string) => Map<string, number> | undefined,
   options: ShaderPreparationOptions
 ): Promise<ShaderPreparationResult> {
   const { shader, shaderId, dimensions, labelSuffix = '', measureCompileTime = false } = options;
 
-  // Create output buffer
-  const outputSize = dimensions.width * dimensions.height * 4 * 4; // vec4<f32> = 16 bytes per pixel
+  // Create output texture (HDR-capable rgba16float)
   const label = labelSuffix ? `-${labelSuffix}` : '';
-  const outputBuffer = bufferManager.createBuffer(
-    {
-      size: outputSize,
-      usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC | GPUBufferUsage.COPY_DST,
-      label: `output${label}`,
-    },
-    false
-  );
+  const device = context.getDevice();
+  const outputTexture = device.createTexture({
+    size: { width: dimensions.width, height: dimensions.height },
+    format: context.getStorageFormat() as GPUTextureFormat,
+    usage: GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.COPY_SRC | GPUTextureUsage.TEXTURE_BINDING,
+    label: `output-texture${label}`,
+  });
 
   // Compile shader
   const startCompile = measureCompileTime ? performance.now() : 0;
@@ -184,7 +184,7 @@ export async function prepareShader(
 
   return {
     shaderModule: compilationResult.module,
-    outputBuffer,
+    outputTexture,
     dimensionsBuffer,
     paramBuffer,
     layout,

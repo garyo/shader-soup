@@ -10,6 +10,9 @@ export class WebGPUContext {
   private device: GPUDevice | null = null;
   private initialized: boolean = false;
   private initializationPromise: Promise<void> | null = null;
+  private canvasFormat: GPUTextureFormat = 'rgba8unorm';
+  private storageFormat: GPUTextureFormat = 'rgba32float'; // HDR-capable format (16 bytes/pixel, matches vec4<f32>)
+  private supportsBgraStorage: boolean = false;
 
   private constructor() {
     // Private constructor for singleton
@@ -76,13 +79,27 @@ export class WebGPUContext {
       throw new WebGPUNotSupportedError('Failed to request WebGPU adapter');
     }
 
-    // Check if shader-f16 is supported
+    // Check for optional features
     const features: GPUFeatureName[] = [];
+
     if (this.adapter.features.has('shader-f16')) {
       features.push('shader-f16');
       console.log('[WebGPU] shader-f16 feature available and enabled');
     } else {
       console.warn('[WebGPU] shader-f16 feature not available');
+    }
+
+    // rgba32float is ALWAYS supported for storage textures (core WebGPU spec)
+    // rgba16float requires texture-formats-tier2 for canvas display (HDR)
+    this.storageFormat = 'rgba32float'; // Always use rgba32float for compute shader output
+
+    if (this.adapter.features.has('texture-formats-tier2')) {
+      features.push('texture-formats-tier2');
+      this.canvasFormat = 'rgba16float'; // HDR display
+      console.log('[WebGPU] texture-formats-tier2 available - HDR enabled (rgba16float canvas)');
+    } else {
+      this.canvasFormat = 'rgba8unorm'; // SDR fallback
+      console.log('[WebGPU] Using rgba8unorm canvas (SDR), rgba32float storage (always supported)');
     }
 
     // Request device with higher buffer size limits for high-res rendering
@@ -214,6 +231,57 @@ export class WebGPUContext {
       WebGPUContext.instance.destroy();
       WebGPUContext.instance = null;
     }
+  }
+
+  /**
+   * Get the canvas format to use for display
+   */
+  public getCanvasFormat(): GPUTextureFormat {
+    return this.canvasFormat;
+  }
+
+  /**
+   * Get the storage texture format for compute shader output (HDR-capable)
+   */
+  public getStorageFormat(): GPUTextureFormat {
+    return this.storageFormat;
+  }
+
+  /**
+   * Check if bgra8unorm storage is supported
+   */
+  public supportsBgraStorageTextures(): boolean {
+    return this.supportsBgraStorage;
+  }
+
+  /**
+   * Configure a canvas for direct WebGPU HDR rendering with storage texture support
+   * @param canvas - Canvas element to configure
+   * @returns Configured GPU canvas context
+   */
+  public configureCanvas(canvas: HTMLCanvasElement): GPUCanvasContext {
+    if (!this.device) {
+      throw new WebGPUNotSupportedError('WebGPU context not initialized. Call initialize() first.');
+    }
+
+    const context = canvas.getContext('webgpu');
+    if (!context) {
+      throw new Error('Failed to get WebGPU context from canvas');
+    }
+
+    // Configure with rgba16float and extended tone mapping for HDR
+    // STORAGE_BINDING allows compute shaders to write directly
+    context.configure({
+      device: this.device,
+      format: this.canvasFormat,
+      usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.STORAGE_BINDING,
+      alphaMode: 'opaque',
+      toneMapping: { mode: 'extended' }, // Enable HDR display on compatible screens
+    });
+
+    console.log('[WebGPU] Canvas configured for HDR:', this.canvasFormat, 'with extended tone mapping');
+
+    return context;
   }
 }
 

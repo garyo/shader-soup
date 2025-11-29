@@ -24,27 +24,27 @@ export interface FeedbackIterationContext {
  * - Creates two textures for ping-pong buffer
  * - Initializes the first texture with zeros
  * - Alternates between textures for each iteration
- * - Copies output buffer to texture for next iteration
+ * - Copies output texture to feedback texture for next iteration
  * - Handles cleanup
  *
  * @param device - The GPU device
  * @param dimensions - Texture dimensions {width, height}
  * @param iterations - Number of iterations to execute
- * @param outputBuffer - The output buffer to copy from after each iteration
+ * @param outputTexture - The output texture to copy from after each iteration
  * @param labelSuffix - Optional suffix for texture labels (e.g., 'hires')
  * @param onIteration - Callback executed for each iteration, receives context with prevTexture/prevSampler
  *
  * @example
- * await executeFeedbackLoop(device, {width: 512, height: 512}, 10, outputBuffer, '', async (ctx) => {
+ * await executeFeedbackLoop(device, {width: 512, height: 512}, 10, outputTexture, '', async (ctx) => {
  *   const bindGroup = createBindGroup(..., ctx.prevTexture, ctx.prevSampler);
- *   await executor.execute(createExecutionContext(pipeline, bindGroup, workgroups, outputBuffer));
+ *   await executor.execute(createExecutionContext(pipeline, bindGroup, workgroups, outputTexture));
  * });
  */
 export async function executeFeedbackLoop(
   device: GPUDevice,
   dimensions: { width: number; height: number },
   iterations: number,
-  outputBuffer: GPUBuffer,
+  outputTexture: GPUTexture,
   labelSuffix: string,
   onIteration: (context: FeedbackIterationContext) => Promise<void>
 ): Promise<void> {
@@ -96,11 +96,11 @@ export async function executeFeedbackLoop(
         iterationNumber: iter,
       });
 
-      // Copy output buffer to current texture for next iteration (unless last)
+      // Copy output texture to current texture for next iteration (unless last)
       if (!isLastIter) {
         const commandEncoder = device.createCommandEncoder();
-        commandEncoder.copyBufferToTexture(
-          { buffer: outputBuffer, bytesPerRow: dimensions.width * 16 },
+        commandEncoder.copyTextureToTexture(
+          { texture: outputTexture },
           { texture: currentTexture },
           [dimensions.width, dimensions.height]
         );

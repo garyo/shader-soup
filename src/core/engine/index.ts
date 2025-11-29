@@ -8,3 +8,5 @@ export { BufferManager } from './BufferManager';
 export { ParameterManager } from './ParameterManager';
 export { PipelineBuilder } from './PipelineBuilder';
 export { Executor, createExecutionContext } from './Executor';
+export { CanvasRenderer } from './CanvasRenderer';
+export { GPUPostProcessor } from './GPUPostProcessor';

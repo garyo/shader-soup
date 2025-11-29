@@ -16,7 +16,7 @@ struct Params {
 
 @group(0) @binding(0) var coordTexture: texture_2d<f32>;
 @group(0) @binding(1) var coordSampler: sampler;
-@group(0) @binding(2) var<storage, read_write> output: array<vec4<f32>>;
+@group(0) @binding(2) var output: texture_storage_2d<rgba32float, write>;
 @group(0) @binding(3) var<uniform> dimensions: Dimensions;
 @group(0) @binding(4) var<uniform> params: Params;
 
@@ -26,7 +26,7 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
     return;
   }
 
-  let index = id.y * dimensions.width + id.x;
+  //   let index = id.y * dimensions.width + id.x; // Removed for texture output
 
   // Calculate texture coordinates (0 to 1)
   let texCoord = vec2<f32>(
@@ -45,5 +45,5 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
   let g = (sin(wave + coord.y + params.colorShift + 2.094) + 1.0) * 0.5;
   let b = (sin(wave + coord.y + params.colorShift + 4.189) + 1.0) * 0.5;
 
-  output[index] = vec4<f32>(r, g, b, 1.0);
+  textureStore(output, vec2<u32>(id.xy), vec4<f32>(r, g, b, 1.0));
 }

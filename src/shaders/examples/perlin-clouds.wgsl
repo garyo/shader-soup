@@ -18,7 +18,7 @@ struct Params {
 
 @group(0) @binding(0) var coordTexture: texture_2d<f32>;
 @group(0) @binding(1) var coordSampler: sampler;
-@group(0) @binding(2) var<storage, read_write> output: array<vec4<f32>>;
+@group(0) @binding(2) var output: texture_storage_2d<rgba32float, write>;
 @group(0) @binding(3) var<uniform> dimensions: Dimensions;
 @group(0) @binding(4) var<uniform> params: Params;
 
@@ -28,7 +28,7 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
     return;
   }
 
-  let index = id.y * dimensions.width + id.x;
+  //   let index = id.y * dimensions.width + id.x; // Removed for texture output
 
   let texCoord = vec2<f32>(
     f32(id.x) / f32(dimensions.width),
@@ -63,5 +63,5 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
   let white = vec3<f32>(1.0, 1.0, 1.0);
   let color = mix(skyBlue, white, value);
 
-  output[index] = vec4<f32>(color, 1.0);
+  textureStore(output, vec2<u32>(id.xy), vec4<f32>(color, 1.0));
 }

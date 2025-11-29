@@ -204,7 +204,7 @@ export function createExecutionContext(
   pipeline: GPUComputePipeline,
   bindGroup: GPUBindGroup,
   workgroups: WorkgroupDimensions,
-  outputBuffer: GPUBuffer
+  outputBuffer?: GPUBuffer | GPUTexture
 ): ExecutionContext {
   return {
     pipeline,

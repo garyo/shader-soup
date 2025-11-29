@@ -121,7 +121,7 @@ export interface ExecutionContext {
   pipeline: GPUComputePipeline;
   bindGroup: GPUBindGroup;
   workgroups: WorkgroupDimensions;
-  outputBuffer: GPUBuffer;
+  outputBuffer?: GPUBuffer | GPUTexture; // Optional, for tracking only (not used during execution)
 }
 
 /**

@@ -90,13 +90,14 @@ describe('ParameterManager', () => {
   describe('getParameterValues', () => {
     it('should use default values when no values provided', () => {
       const params = [
-        { name: 'a', min: 0, max: 10, default: 5, step: 0.1 },
-        { name: 'b', min: 0, max: 1, default: 0.5, step: 0.01 },
+        { name: 'a', type: 'f32' as const, min: 0, max: 10, default: 5, step: 0.1 },
+        { name: 'b', type: 'f32' as const, min: 0, max: 1, default: 0.5, step: 0.01 },
       ];
 
-      const values = parameterManager.getParameterValues(params);
+      const buffer = parameterManager.getParameterValues(params);
+      const values = new Float32Array(buffer);
 
-      expect(values).toBeInstanceOf(Float32Array);
+      expect(buffer).toBeInstanceOf(ArrayBuffer);
       expect(values.length).toBe(2);
       expect(values[0]).toBe(5);
       expect(values[1]).toBe(0.5);
@@ -104,8 +105,8 @@ describe('ParameterManager', () => {
 
     it('should use provided values', () => {
       const params = [
-        { name: 'a', min: 0, max: 10, default: 5, step: 0.1 },
-        { name: 'b', min: 0, max: 1, default: 0.5, step: 0.01 },
+        { name: 'a', type: 'f32' as const, min: 0, max: 10, default: 5, step: 0.1 },
+        { name: 'b', type: 'f32' as const, min: 0, max: 1, default: 0.5, step: 0.01 },
       ];
 
       const valueMap = new Map([
@@ -113,18 +114,20 @@ describe('ParameterManager', () => {
         ['b', 0.8],
       ]);
 
-      const values = parameterManager.getParameterValues(params, valueMap);
+      const buffer = parameterManager.getParameterValues(params, valueMap);
+      const values = new Float32Array(buffer);
 
       expect(values[0]).toBeCloseTo(7.5);
       expect(values[1]).toBeCloseTo(0.8);
     });
 
     it('should clamp values to min/max', () => {
-      const params = [{ name: 'a', min: 0, max: 10, default: 5, step: 0.1 }];
+      const params = [{ name: 'a', type: 'f32' as const, min: 0, max: 10, default: 5, step: 0.1 }];
 
       const valueMap = new Map([['a', 15]]);
 
-      const values = parameterManager.getParameterValues(params, valueMap);
+      const buffer = parameterManager.getParameterValues(params, valueMap);
+      const values = new Float32Array(buffer);
 
       expect(values[0]).toBe(10);
     });
@@ -133,8 +136,8 @@ describe('ParameterManager', () => {
   describe('generateParameterStruct', () => {
     it('should generate WGSL struct', () => {
       const params = [
-        { name: 'frequency', min: 0, max: 10, default: 1, step: 0.1 },
-        { name: 'amplitude', min: 0, max: 2, default: 1, step: 0.05 },
+        { name: 'frequency', type: 'f32' as const, min: 0, max: 10, default: 1, step: 0.1 },
+        { name: 'amplitude', type: 'f32' as const, min: 0, max: 2, default: 1, step: 0.05 },
       ];
 
       const struct = parameterManager.generateParameterStruct(params);
@@ -154,8 +157,8 @@ describe('ParameterManager', () => {
   describe('generateParameterDocs', () => {
     it('should generate markdown table', () => {
       const params = [
-        { name: 'frequency', min: 0, max: 10, default: 1, step: 0.1 },
-        { name: 'amplitude', min: 0, max: 2, default: 1, step: 0.05 },
+        { name: 'frequency', type: 'f32' as const, min: 0, max: 10, default: 1, step: 0.1 },
+        { name: 'amplitude', type: 'f32' as const, min: 0, max: 2, default: 1, step: 0.05 },
       ];
 
       const docs = parameterManager.generateParameterDocs(params);
@@ -169,8 +172,8 @@ describe('ParameterManager', () => {
   describe('serialize and deserialize', () => {
     it('should serialize and deserialize parameters', () => {
       const params = [
-        { name: 'frequency', min: 0, max: 10, default: 1, step: 0.1 },
-        { name: 'amplitude', min: 0, max: 2, default: 1, step: 0.05 },
+        { name: 'frequency', type: 'f32' as const, min: 0, max: 10, default: 1, step: 0.1 },
+        { name: 'amplitude', type: 'f32' as const, min: 0, max: 2, default: 1, step: 0.05 },
       ];
 
       const values = new Map([
