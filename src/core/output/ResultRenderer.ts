@@ -153,6 +153,7 @@ export class ResultRenderer {
       targetDimensions.height,
       factor,
     ]);
+    console.log(`Downsampling on GPU: ${JSON.stringify(params, null, 2)}`)
     const paramsBuffer = this.bufferManager.createBufferWithData(
       params as BufferSource,
       GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,

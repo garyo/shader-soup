@@ -2,11 +2,13 @@
  * Mashup Results - Display mashup shader variations
  */
 
-import { type Component, For, Show, createSignal } from 'solid-js';
+import { type Component, For, Show, createSignal, onCleanup } from 'solid-js';
 import { ChangelogModal } from './ChangelogModal';
 import { HoverPreview } from './HoverPreview';
 import type { ShaderDefinition } from '@/types/core';
 import { resultStore } from '@/stores';
+import { getWebGPUContext } from '@/core/engine/WebGPUContext';
+import { CanvasRenderer } from '@/core/engine/CanvasRenderer';
 
 interface MashupResultsProps {
   mashups: ShaderDefinition[];
@@ -21,6 +23,11 @@ export const MashupResults: Component<MashupResultsProps> = (props) => {
   const [previewShader, setPreviewShader] = createSignal<ShaderDefinition | null>(null);
   const [previewPosition, setPreviewPosition] = createSignal({ x: 0, y: 0 });
   let hoverTimer: number | undefined;
+  const canvasRenderers = new Map<string, CanvasRenderer>();
+
+  onCleanup(() => {
+    canvasRenderers.clear();
+  });
 
   return (
     <div class="mashup-results">
@@ -53,21 +60,31 @@ export const MashupResults: Component<MashupResultsProps> = (props) => {
                   {(r) => {
                     let canvasRef: HTMLCanvasElement | undefined;
 
-                    // Draw result to canvas
-                    setTimeout(() => {
-                      if (canvasRef) {
-                        const ctx = canvasRef.getContext('2d');
-                        if (ctx) {
-                          ctx.putImageData(r().imageData, 0, 0);
+                    // Render GPU texture to WebGPU canvas (same as main shader cards)
+                    setTimeout(async () => {
+                      if (!canvasRef || !r().gpuTexture) return;
+
+                      try {
+                        const context = await getWebGPUContext();
+                        let renderer = canvasRenderers.get(mashup.id);
+
+                        if (!renderer) {
+                          renderer = new CanvasRenderer(context);
+                          canvasRenderers.set(mashup.id, renderer);
                         }
+
+                        renderer.configureCanvas(canvasRef);
+                        await renderer.renderToCanvas(r().gpuTexture!);
+                      } catch (err) {
+                        console.warn('Mashup canvas rendering failed:', err);
                       }
                     }, 0);
 
                     return (
                       <canvas
                         ref={canvasRef}
-                        width={r().imageData.width}
-                        height={r().imageData.height}
+                        width={128}
+                        height={128}
                         class="mashup-canvas"
                         onMouseEnter={(e) => {
                           setPreviewPosition({ x: e.clientX, y: e.clientY });

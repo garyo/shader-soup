@@ -52,11 +52,11 @@ export interface ShaderDefinition {
  */
 export interface ShaderResult {
   shaderId: string;
-  imageData: ImageData;
+  imageData?: ImageData;  // Optional: only created on-demand for downloads
   executionTime: number;
   timestamp: Date;
   error?: string;
-  gpuTexture?: GPUTexture;  // Optional: for WebGPU direct rendering (zero CPU readback)
+  gpuTexture?: GPUTexture;  // For WebGPU direct rendering (zero CPU readback)
 }
 
 /**

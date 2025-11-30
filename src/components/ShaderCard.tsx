@@ -2,7 +2,7 @@
  * Shader Card - Display shader result with parameter controls
  */
 
-import { type Component, createEffect, For, Show, createSignal, onCleanup } from 'solid-js';
+import { type Component, createEffect, For, Show, createSignal } from 'solid-js';
 import { ParameterSlider } from './ParameterSlider';
 import { IterationSlider } from './IterationSlider';
 import { GlobalParametersComponent } from './GlobalParameters';
@@ -45,12 +45,25 @@ export const ShaderCard: Component<ShaderCardProps> = (props) => {
   // Draw result to canvas when it changes
   createEffect(async () => {
     if (props.result && canvasRef) {
-      // Match canvas resolution to its actual display size (prevents browser downsampling artifacts)
+      // Match canvas resolution to display size × devicePixelRatio for HiDPI/Retina displays
       const displayWidth = canvasRef.clientWidth;
       const displayHeight = canvasRef.clientHeight;
+      const dpr = window.devicePixelRatio || 1;
+
       if (displayWidth > 0 && displayHeight > 0) {
-        canvasRef.width = displayWidth;
-        canvasRef.height = displayHeight;
+        // Set internal resolution to physical pixels (displaySize × DPR)
+        const physicalWidth = Math.floor(displayWidth * dpr);
+        const physicalHeight = Math.floor(displayHeight * dpr);
+
+        // Only update and log if size actually changed
+        if (canvasRef.width !== physicalWidth || canvasRef.height !== physicalHeight) {
+          canvasRef.width = physicalWidth;
+          canvasRef.height = physicalHeight;
+          console.log(`[ShaderCard "${props.shader.name}"] Canvas: ${displayWidth}×${displayHeight} CSS @ ${dpr}× DPR = ${physicalWidth}×${physicalHeight} physical pixels`);
+        }
+
+        // Keep CSS size at logical pixels (handled by CSS)
+        // This gives 1:1 mapping of canvas pixels to physical pixels on HiDPI displays
       }
       // Try WebGPU rendering first (zero CPU readback)
       if (props.result.gpuTexture) {
@@ -75,10 +88,12 @@ export const ShaderCard: Component<ShaderCardProps> = (props) => {
         }
       }
 
-      // Fallback: 2D canvas with ImageData
-      const ctx = canvasRef.getContext('2d');
-      if (ctx) {
-        ctx.putImageData(props.result.imageData, 0, 0);
+      // Fallback: 2D canvas with ImageData (if available)
+      if (props.result.imageData) {
+        const ctx = canvasRef.getContext('2d');
+        if (ctx) {
+          ctx.putImageData(props.result.imageData, 0, 0);
+        }
       }
     }
   });
@@ -141,8 +156,8 @@ export const ShaderCard: Component<ShaderCardProps> = (props) => {
         >
           <canvas
             ref={canvasRef}
-            width={props.result?.imageData.width || 512}
-            height={props.result?.imageData.height || 512}
+            width={props.result?.imageData?.width || 512}
+            height={props.result?.imageData?.height || 512}
             class="shader-canvas"
           />
         </Show>

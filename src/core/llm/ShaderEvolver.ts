@@ -8,10 +8,10 @@ import { ParameterManager } from '../engine/ParameterManager';
 import { SessionMemory } from './SessionMemory';
 import { PipelineBuilder } from '../engine/PipelineBuilder';
 import { Executor } from '../engine/Executor';
-import { ResultRenderer } from '../output/ResultRenderer';
 import { BufferManager } from '../engine/BufferManager';
 import { WebGPUContext } from '../engine/WebGPUContext';
-import { CoordinateGenerator } from '../input/CoordinateGenerator';
+import { GPUPostProcessor } from '../engine/GPUPostProcessor';
+// CoordinateGenerator and ResultRenderer no longer needed - using GPU-only CanvasRenderer path
 import type { ShaderDefinition, ShaderParameter } from '@/types/core';
 import {
   createBatchMutationPrompt,
@@ -34,6 +34,7 @@ export interface EvolutionOptions {
   model?: string;
   batchSize?: number;
   onProgress?: (update: ProgressUpdate) => void;
+  onChildCompleted?: (child: EvolutionResult, index: number, total: number) => void | Promise<void>;
   experimentsPerChild?: number;
   mashupExperiments?: number;
 }
@@ -76,9 +77,10 @@ export class ShaderEvolver {
   private bufferManager: BufferManager;
   private pipelineBuilder: PipelineBuilder;
   private executor: Executor;
-  private resultRenderer: ResultRenderer;
-  private coordGenerator: CoordinateGenerator;
+  private gpuPostProcessor: GPUPostProcessor;
+  // CoordinateGenerator and ResultRenderer removed - using GPU-only CanvasRenderer path
   private onProgress?: (update: ProgressUpdate) => void;
+  private onChildCompleted?: (child: EvolutionResult, index: number, total: number) => void | Promise<void>;
   private experimentsPerChild: number;
   private mashupExperiments: number;
 
@@ -99,14 +101,15 @@ export class ShaderEvolver {
     this.memory = new SessionMemory();
     this.maxDebugAttempts = options?.maxDebugAttempts ?? 5;
     this.onProgress = options?.onProgress;
+    this.onChildCompleted = options?.onChildCompleted;
     this.experimentsPerChild = options?.experimentsPerChild ?? 3;
     this.mashupExperiments = options?.mashupExperiments ?? 3;
     this.webgpuContext = webgpuContext;
     this.bufferManager = bufferManager;
     this.pipelineBuilder = new PipelineBuilder(webgpuContext);
     this.executor = new Executor(webgpuContext);
-    this.resultRenderer = new ResultRenderer(bufferManager, webgpuContext);
-    this.coordGenerator = new CoordinateGenerator();
+    this.gpuPostProcessor = new GPUPostProcessor(webgpuContext, compiler, bufferManager);
+    // CoordinateGenerator and ResultRenderer removed - using GPU-only CanvasRenderer path
 
     console.log(`ShaderEvolver initialized with ${this.memory.getEntryCount()} memory entries`);
   }
@@ -154,7 +157,6 @@ export class ShaderEvolver {
     const totalStart = performance.now();
     try {
       const device = this.webgpuContext.getDevice();
-      const dimensions = { width: size, height: size };
 
       // Compile the shader
       const compileStart = performance.now();
@@ -170,16 +172,6 @@ export class ShaderEvolver {
       const parameters = this.parameterManager.parseParameters(shaderSource);
       const bindingDetection = this.compiler.detectOptionalBindings(shaderSource);
 
-      // Create coordinate texture and sampler
-      const coordTexture = await this.coordGenerator.createCoordinateTexture(
-        dimensions,
-        this.webgpuContext,
-        1.0, // zoom
-        0,   // panX
-        0    // panY
-      );
-      const coordSampler = this.coordGenerator.createCoordinateSampler(this.webgpuContext);
-
       // Create output texture (HDR-capable)
       const outputTexture = device.createTexture({
         size: { width: size, height: size },
@@ -188,10 +180,23 @@ export class ShaderEvolver {
         label: 'visual-feedback-output',
       });
 
-      // Create dimensions buffer
-      const dimensionsData = new Uint32Array([size, size, 0, 0]);
+      // Create dimensions buffer with zoom and pan
+      // Struct layout: { width: u32, height: u32, zoom: f32, _pad1: u32, panX: f32, panY: f32, _pad2: u32, _pad3: u32 }
+      const dimensionsData = new ArrayBuffer(32); // 8 × 4 bytes
+      const u32View = new Uint32Array(dimensionsData);
+      const f32View = new Float32Array(dimensionsData);
+
+      u32View[0] = size;     // width: u32
+      u32View[1] = size;     // height: u32
+      f32View[2] = 1.0;      // zoom: f32
+      u32View[3] = 0;        // _pad1: u32
+      f32View[4] = 0.0;      // panX: f32
+      f32View[5] = 0.0;      // panY: f32
+      u32View[6] = 0;        // _pad2: u32
+      u32View[7] = 0;        // _pad3: u32
+
       const dimensionsBuffer = this.bufferManager.createBufferWithData(
-        dimensionsData as BufferSource,
+        dimensionsData,
         GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
         'visual-feedback-dims'
       );
@@ -205,8 +210,8 @@ export class ShaderEvolver {
           // Normal case: shader has @param comments, use those values
           paramBuffer = this.parameterManager.createParameterBuffer(parameters);
         } else {
-          // Mismatch case: shader declares @binding(4) but no @param comments
-          console.warn(`[Visual Feedback] Shader declares @binding(4) but has no // @param comments. Creating dummy params buffer.`);
+          // Mismatch case: shader declares @binding(2) but no @param comments
+          console.warn(`[Visual Feedback] Shader declares @binding(2) but has no // @param comments. Creating dummy params buffer.`);
           // Create a larger dummy buffer to handle typical Params structs
           // WebGPU requires uniform buffers to be multiples of 16 bytes
           // Using 256 bytes should cover most cases (16 float parameters)
@@ -220,7 +225,7 @@ export class ShaderEvolver {
           );
         }
       } else if (hasParamComments) {
-        console.warn(`[Visual Feedback] Shader has // @param comments but no @binding(4) declaration. Parameters will be ignored.`);
+        console.warn(`[Visual Feedback] Shader has // @param comments but no @binding(2) declaration. Parameters will be ignored.`);
       }
 
       // Build pipeline with unique label to avoid caching conflicts
@@ -246,8 +251,6 @@ export class ShaderEvolver {
         // Create bind group
         const bindGroup = this.pipelineBuilder.createStandardBindGroup(
           layout,
-          coordTexture,
-          coordSampler,
           outputTexture,
           dimensionsBuffer,
           paramBuffer
@@ -279,36 +282,51 @@ export class ShaderEvolver {
         throw error;
       }
 
-      // Copy HDR texture to buffer for result rendering
-      const outputSize = size * size * 4 * 4; // vec4<f32> = 16 bytes per pixel
-      const outputBuffer = this.bufferManager.createBuffer({
-        size: outputSize,
-        usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST | GPUBufferUsage.COPY_SRC,
-        label: 'evolver-texture-copy-buffer',
-      }, false);
-
-      // Copy texture to buffer
-      const copyEncoder = device.createCommandEncoder({ label: 'evolver-texture-to-buffer-copy' });
-      copyEncoder.copyTextureToBuffer(
-        { texture: outputTexture },
-        { buffer: outputBuffer, bytesPerRow: size * 16, offset: 0 }, // rgba32float = 16 bytes/pixel
-        { width: size, height: size }
-      );
-      device.queue.submit([copyEncoder.finish()]);
-      await device.queue.onSubmittedWorkDone();
-
-      // Convert output buffer to base64 PNG
+      // 🚀 NEW GPU-ONLY PATH: Render texture directly to canvas, then to base64
       const encodeStart = performance.now();
-      const dataURL = await this.resultRenderer.bufferToDataURL(
-        outputBuffer,
-        dimensions,
-        'image/png',
-        0.7 // Lower quality to reduce size
+
+      // Use GPUPostProcessor to convert rgba32float → rgba16float (same as main display path)
+      // gamma=1.0, contrast=1.0 means no color adjustment, just format conversion
+      const { displayTexture } = await this.gpuPostProcessor.applyGammaContrast(
+        'thumbnail', // shaderId for texture pooling
+        outputTexture,
+        { width: size, height: size },
+        1.0, // gamma (1.0 = no change)
+        1.0  // contrast (1.0 = no change)
       );
+
+      // Create offscreen canvas
+      const canvas = new OffscreenCanvas(size, size);
+      const canvasContext = canvas.getContext('webgpu');
+
+      if (!canvasContext) {
+        throw new Error('Failed to get WebGPU canvas context for thumbnail');
+      }
+
+      // Configure canvas for WebGPU rendering
+      canvasContext.configure({
+        device,
+        format: 'rgba16float', // Match display format for HDR
+        usage: GPUTextureUsage.RENDER_ATTACHMENT,
+        alphaMode: 'opaque',
+      });
+
+      // Import CanvasRenderer dynamically to render GPU texture to canvas
+      const { CanvasRenderer } = await import('../engine/CanvasRenderer');
+      const canvasRenderer = new CanvasRenderer(this.webgpuContext);
+
+      // Configure and render to offscreen canvas (use displayTexture, not outputTexture)
+      canvasRenderer.configureCanvasContext(canvasContext as GPUCanvasContext);
+      await canvasRenderer.renderToCanvas(displayTexture);
+
+      // Convert canvas to base64 (all on GPU until this point!)
+      const blob = await canvas.convertToBlob({ type: 'image/png', quality: 0.7 });
+      const arrayBuffer = await blob.arrayBuffer();
+      const base64Data = btoa(String.fromCharCode(...new Uint8Array(arrayBuffer)));
+
       const encodeTime = performance.now() - encodeStart;
 
-      // Extract base64 data (remove "data:image/png;base64," prefix)
-      const base64Data = dataURL.split(',')[1];
+      // base64Data is already extracted (no data URL prefix)
 
       const totalTime = performance.now() - totalStart;
 
@@ -418,17 +436,29 @@ export class ShaderEvolver {
             parentInfo: `Evolution of "${parentShader.name}"`,
           });
 
-          results.push({
+          const result: EvolutionResult = {
             success: true,
             shader: childShader,
-          });
+          };
+          results.push(result);
 
           console.log(`Child ${i + 1} generated successfully. Memory now has ${this.memory.getEntryCount()} entries.`);
+
+          // Call onChildCompleted callback for progressive display
+          if (this.onChildCompleted) {
+            await this.onChildCompleted(result, i, count);
+          }
         } catch (error) {
-          results.push({
+          const result: EvolutionResult = {
             success: false,
             error: error instanceof Error ? error.message : 'Unknown error during evolution',
-          });
+          };
+          results.push(result);
+
+          // Call onChildCompleted callback even for failures
+          if (this.onChildCompleted) {
+            await this.onChildCompleted(result, i, count);
+          }
         }
       }
 

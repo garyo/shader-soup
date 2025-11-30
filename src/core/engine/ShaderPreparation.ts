@@ -21,6 +21,12 @@ export interface ShaderPreparationOptions {
   shaderId: string;
   /** Dimensions for rendering */
   dimensions: { width: number; height: number };
+  /** Zoom factor (>1 zooms in, <1 zooms out) */
+  zoom: number;
+  /** Pan X offset (positive shifts view left) */
+  panX: number;
+  /** Pan Y offset (positive shifts view up) */
+  panY: number;
   /** Label suffix for buffers (e.g., '', 'hires') */
   labelSuffix?: string;
   /** Parameter values override (if not provided, uses shader defaults or store values) */
@@ -99,7 +105,7 @@ export async function prepareShader(
   getParameterValues: (shaderId: string) => Map<string, number> | undefined,
   options: ShaderPreparationOptions
 ): Promise<ShaderPreparationResult> {
-  const { shader, shaderId, dimensions, labelSuffix = '', measureCompileTime = false } = options;
+  const { shader, shaderId, dimensions, zoom, panX, panY, labelSuffix = '', measureCompileTime = false } = options;
 
   // Create output texture (HDR-capable rgba16float)
   const label = labelSuffix ? `-${labelSuffix}` : '';
@@ -123,10 +129,23 @@ export async function prepareShader(
 
   const compileTime = measureCompileTime ? performance.now() - startCompile : undefined;
 
-  // Create dimensions buffer
-  const dimensionsData = new Uint32Array([dimensions.width, dimensions.height, 0, 0]);
+  // Create dimensions buffer with zoom and pan
+  // Struct layout: { width: u32, height: u32, zoom: f32, _pad1: u32, panX: f32, panY: f32, _pad2: u32, _pad3: u32 }
+  const dimensionsData = new ArrayBuffer(32); // 8 × 4 bytes
+  const u32View = new Uint32Array(dimensionsData);
+  const f32View = new Float32Array(dimensionsData);
+
+  u32View[0] = dimensions.width;   // width: u32
+  u32View[1] = dimensions.height;  // height: u32
+  f32View[2] = zoom;                // zoom: f32
+  u32View[3] = 0;                   // _pad1: u32
+  f32View[4] = panX;                // panX: f32
+  f32View[5] = panY;                // panY: f32
+  u32View[6] = 0;                   // _pad2: u32
+  u32View[7] = 0;                   // _pad3: u32
+
   const dimensionsBuffer = bufferManager.createBufferWithData(
-    dimensionsData as BufferSource,
+    dimensionsData,
     GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
     `dimensions${label}`
   );

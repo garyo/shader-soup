@@ -17,8 +17,7 @@ import { ParameterManager } from '@/core/engine/ParameterManager';
 import { PipelineBuilder } from '@/core/engine/PipelineBuilder';
 import { Executor, createExecutionContext } from '@/core/engine/Executor';
 import { GPUPostProcessor } from '@/core/engine/GPUPostProcessor';
-import { CanvasRenderer } from '@/core/engine/CanvasRenderer';
-import { CoordinateGenerator } from '@/core/input/CoordinateGenerator';
+// CoordinateGenerator and CanvasRenderer no longer needed in App - CanvasRenderer used in ShaderEvolver
 import { ResultRenderer } from '@/core/output/ResultRenderer';
 import { PostProcessor } from '@/core/output/PostProcessor';
 import { withGPUErrorScope } from '@/core/engine/GPUErrorHandler';
@@ -33,16 +32,22 @@ import sineWaveSource from '../shaders/examples/sine-wave.wgsl?raw';
 import colorMixerSource from '../shaders/examples/color-mixer.wgsl?raw';
 import checkerboardSource from '../shaders/examples/checkerboard.wgsl?raw';
 import radialGradientSource from '../shaders/examples/radial-gradient.wgsl?raw';
+import perlinCloudsSource from '../shaders/examples/perlin-clouds.wgsl?raw';
+import marbleSource from '../shaders/examples/marble.wgsl?raw';
+import cellularPatternSource from '../shaders/examples/cellular-pattern.wgsl?raw';
+import sineWaveTexturedSource from '../shaders/examples/sine-wave-textured.wgsl?raw';
 // Feedback disabled for now - complicates evolution and slows down rendering
 // import feedbackSource from '../shaders/examples/feedback.wgsl?raw';
+// Grayscale requires input texture - not included in default examples
+// import grayscaleSource from '../shaders/examples/grayscale.wgsl?raw';
 
 // ============================================================================
 // Evolution Configuration
 // ============================================================================
 const EVOLUTION_CONFIG = {
   // Normal evolution settings
-  childrenCount: 3,           // Number of children to generate per evolution
-  experimentsPerChild: 2,     // Number of experimental renders per child
+  childrenCount: 6,           // Number of children to generate per evolution
+  experimentsPerChild: 1,     // Number of experimental renders per child
 
   // Mashup settings
   mashupCount: 4,             // Number of mashup variations to generate
@@ -76,11 +81,10 @@ export const App: Component = () => {
   let parameterManager: ParameterManager;
   let pipelineBuilder: PipelineBuilder;
   let executor: Executor;
-  let coordGenerator: CoordinateGenerator;
+  // CoordinateGenerator removed - UV coords computed directly in shaders
   let resultRenderer: ResultRenderer;
   let postProcessor: PostProcessor;
   let gpuPostProcessor: GPUPostProcessor;
-  let canvasRenderer: CanvasRenderer;
   let shaderEvolver: ShaderEvolver;
 
   // GPU-only mode flag (set to true to eliminate CPU readback)
@@ -98,11 +102,11 @@ export const App: Component = () => {
       parameterManager = new ParameterManager(bufferManager);
       pipelineBuilder = new PipelineBuilder(context);
       executor = new Executor(context, true); // Enable profiling
-      coordGenerator = new CoordinateGenerator();
+      // CoordinateGenerator removed - UV coords computed directly in shaders
       resultRenderer = new ResultRenderer(bufferManager, context);
       postProcessor = new PostProcessor(context, bufferManager);
       gpuPostProcessor = new GPUPostProcessor(context, compiler, bufferManager);
-      canvasRenderer = new CanvasRenderer(context);
+      // CanvasRenderer created on-demand in ShaderEvolver for GPU-only thumbnail rendering
 
       // Initialize LLM-based shader evolver
       const apiKey = import.meta.env.VITE_ANTHROPIC_API_KEY;
@@ -131,6 +135,28 @@ export const App: Component = () => {
                 evolutionStore.updateProgress(shaderId, {
                   debugAttempt: update.debugAttempt || 0,
                   status: 'debugging',
+                });
+              }
+            }
+          },
+          onChildCompleted: async (result, index, total) => {
+            // Handle each child as it completes (progressive display)
+            const activeEvolutions = Array.from(evolutionStore.activeEvolutions.entries());
+            if (activeEvolutions.length > 0) {
+              const [shaderId] = activeEvolutions[0];
+
+              if (result.success && result.shader) {
+                addLog(`✓ Child ${index + 1}/${total} compiled successfully (${result.debugAttempts || 0} debug attempts)`);
+
+                // Add child to evolution store immediately
+                evolutionStore.addChild(shaderId, result.shader);
+
+                // Execute child shader to generate GPU texture for display
+                await executeShader(result.shader.id, result.shader);
+              } else {
+                addLog(`✗ Child ${index + 1}/${total} failed: ${result.error}`, 'error');
+                evolutionStore.updateProgress(shaderId, {
+                  lastError: result.error,
                 });
               }
             }
@@ -185,11 +211,6 @@ export const App: Component = () => {
         description: 'Wave pattern with adjustable frequency and colors',
       },
       {
-        name: 'Color Mixer',
-        source: colorMixerSource,
-        description: 'RGB gradient generator with multiple mix modes',
-      },
-      {
         name: 'Checkerboard',
         source: checkerboardSource,
         description: 'Rotatable checkerboard pattern',
@@ -198,6 +219,31 @@ export const App: Component = () => {
         name: 'Radial Gradient',
         source: radialGradientSource,
         description: 'HSV-based radial gradient',
+      },
+      {
+        name: 'Perlin Clouds',
+        source: perlinCloudsSource,
+        description: 'Cloud-like patterns using Perlin noise and FBM',
+      },
+      {
+        name: 'Marble Texture',
+        source: marbleSource,
+        description: 'Marble-like patterns with turbulence and domain warping',
+      },
+      {
+        name: 'Cellular Pattern',
+        source: cellularPatternSource,
+        description: 'Voronoi-like cellular noise for organic patterns',
+      },
+      {
+        name: 'Color Mixer',
+        source: colorMixerSource,
+        description: 'RGB gradient generator with multiple mix modes',
+      },
+      {
+        name: 'Sine Wave (Textured)',
+        source: sineWaveTexturedSource,
+        description: 'Colorful sine wave patterns with texture coordinates',
       },
       // Feedback disabled - complicates evolution, hard to get interesting results
       // {
@@ -244,17 +290,7 @@ export const App: Component = () => {
       // Get global parameters for zoom/pan
       const globalParams = shaderStore.getGlobalParameters(shaderId);
 
-      // Create coordinate texture and sampler at supersampled resolution with zoom/pan applied
-      const coordTexture = await coordGenerator.createCoordinateTexture(
-        superDimensions,
-        context,
-        globalParams.zoom,
-        globalParams.panX,
-        globalParams.panY
-      );
-      const coordSampler = coordGenerator.createCoordinateSampler(context);
-
-      // Prepare shader: compile and create all necessary resources
+      // Prepare shader: compile and create all necessary resources (zoom/pan now in dimensions buffer)
       const paramValues = shaderOverride
         ? new Map(shader.parameters.map(p => [p.name, p.default]))
         : undefined; // undefined means use store values
@@ -272,6 +308,9 @@ export const App: Component = () => {
           shader,
           shaderId,
           dimensions: superDimensions,
+          zoom: globalParams.zoom,
+          panX: globalParams.panX,
+          panY: globalParams.panY,
           labelSuffix: '',
           parameterValues: paramValues,
           measureCompileTime: true,
@@ -296,8 +335,6 @@ export const App: Component = () => {
               // Create bind group with prevFrame texture from feedback loop
               const bindGroup = pipelineBuilder.createStandardBindGroup(
                 layout,
-                coordTexture,
-                coordSampler,
                 outputTexture,
                 dimensionsBuffer,
                 paramBuffer,
@@ -314,8 +351,6 @@ export const App: Component = () => {
           // Single execution (no iterations)
           const bindGroup = pipelineBuilder.createStandardBindGroup(
             layout,
-            coordTexture,
-            coordSampler,
             outputTexture,
             dimensionsBuffer,
             paramBuffer
@@ -328,7 +363,7 @@ export const App: Component = () => {
 
       const execTime = performance.now() - startExec;
 
-      let imageData: ImageData;
+      let imageData: ImageData | undefined;
       let postProcessTime = 0;
       let downsampleTime = 0;
       let gpuTexture: GPUTexture | undefined;
@@ -351,39 +386,13 @@ export const App: Component = () => {
         });
         postProcessTime = performance.now() - postProcessStart;
 
-        // Use display texture for WebGPU rendering (filterable)
+        // Use display texture for WebGPU rendering (filterable, with mipmaps for smooth downsampling)
         gpuTexture = processed.displayTexture;
-        // Use storage texture for ImageData (rgba32float format expected by buffer copy)
-        const processedTexture = processed.storageTexture;
 
-        // Copy processed texture to buffer (at supersample resolution)
-        const copyStart = performance.now();
-        const superSize = superDimensions.width * superDimensions.height * 4 * 4;
-        const superBuffer = bufferManager.createBuffer({
-          size: superSize,
-          usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST | GPUBufferUsage.COPY_SRC,
-          label: 'super-processed-buffer',
-        }, false);
+        // Skip imageData creation - will be created on-demand for downloads at higher resolution
+        // No CPU readback needed for normal rendering!
 
-        const copyEncoder = device.createCommandEncoder();
-        copyEncoder.copyTextureToBuffer(
-          { texture: processedTexture },
-          { buffer: superBuffer, bytesPerRow: superDimensions.width * 16 },
-          { width: superDimensions.width, height: superDimensions.height }
-        );
-        device.queue.submit([copyEncoder.finish()]);
-        await device.queue.onSubmittedWorkDone();
-        const copyTime = performance.now() - copyStart;
-
-        // Downsample on GPU to final resolution
-        const downsampleStart = performance.now();
-        imageData = await withGPUErrorScope(device, 'downsampling', async () => {
-          const downsampledBuffer = resultRenderer.downsample(superBuffer, superDimensions, dimensions, supersampleFactor);
-          return await resultRenderer.bufferToImageData(downsampledBuffer, dimensions);
-        });
-        downsampleTime = performance.now() - downsampleStart;
-
-        addLog(`GPU pipeline: exec=${execTime.toFixed(1)}ms, post=${postProcessTime.toFixed(1)}ms, copy=${copyTime.toFixed(1)}ms, downsample=${downsampleTime.toFixed(1)}ms`, 'success');
+        addLog(`GPU-only pipeline: exec=${execTime.toFixed(1)}ms, post=${postProcessTime.toFixed(1)}ms (zero CPU readback)`, 'success');
       } else {
         // LEGACY PATH: Uses CPU readback (backward compatibility)
         const outputSize = superDimensions.width * superDimensions.height * 4 * 4;
@@ -532,31 +541,10 @@ export const App: Component = () => {
       addLog(`Generating ${childrenCount} shader variations...`);
 
       // Evolve all children in one batch call with current temperature, model, and baked params
+      // Children are processed progressively via onChildCompleted callback
       const results = await shaderEvolver.evolveShaderBatch(shaderWithBakedParams, childrenCount, currentTemp, currentModel);
 
-      addLog(`Received ${results.length} variations, processing...`, 'success');
-
-      // Process each result
-      for (let i = 0; i < results.length; i++) {
-        const result = results[i];
-
-        if (result.success && result.shader) {
-          addLog(`✓ Child ${i + 1}/${childrenCount} compiled successfully (${result.debugAttempts || 0} debug attempts)`);
-
-          // Add child to evolution store (NOT main shader store)
-          evolutionStore.addChild(shaderId, result.shader);
-
-          // Execute child shader to generate ImageData (but don't add to main grid)
-          await executeShader(result.shader.id, result.shader);
-        } else {
-          addLog(`✗ Child ${i + 1}/${childrenCount} failed: ${result.error}`, 'error');
-          console.warn(`Failed to evolve child ${i + 1}:`, result.error);
-          evolutionStore.updateProgress(shaderId, {
-            lastError: result.error,
-          });
-        }
-      }
-
+      // All children have already been added/executed via the callback
       addLog(`Evolution complete: ${results.filter(r => r.success).length}/${childrenCount} succeeded`, 'success');
     } catch (error) {
       const errorMsg = getErrorMessage(error, 'Unknown batch evolution error');
@@ -731,20 +719,7 @@ export const App: Component = () => {
       // Get device for error scopes
       const device = context.getDevice();
 
-      // Create coordinate texture with zoom/pan
-      const coordTexture = await withGPUErrorScope(device, 'coordinate texture creation', async () => {
-        return await coordGenerator.createCoordinateTexture(
-          superDimensions,
-          context,
-          globalParams.zoom,
-          globalParams.panX,
-          globalParams.panY
-        );
-      });
-
-      const coordSampler = coordGenerator.createCoordinateSampler(context);
-
-      // Prepare shader: compile and create all necessary resources
+      // Prepare shader: compile and create all necessary resources (zoom/pan now in dimensions buffer)
       const prep = await prepareShader(
         compiler,
         bufferManager,
@@ -758,6 +733,9 @@ export const App: Component = () => {
           shader,
           shaderId,
           dimensions: superDimensions,
+          zoom: globalParams.zoom,
+          panX: globalParams.panX,
+          panY: globalParams.panY,
           labelSuffix: 'hires',
           measureCompileTime: false,
         }
@@ -780,8 +758,6 @@ export const App: Component = () => {
             async (ctx) => {
               const bindGroup = pipelineBuilder.createStandardBindGroup(
                 layout,
-                coordTexture,
-                coordSampler,
                 outputTexture,
                 dimensionsBuffer,
                 paramBuffer,
@@ -796,8 +772,6 @@ export const App: Component = () => {
         } else {
           const bindGroup = pipelineBuilder.createStandardBindGroup(
             layout,
-            coordTexture,
-            coordSampler,
             outputTexture,
             dimensionsBuffer,
             paramBuffer
@@ -951,16 +925,6 @@ export const App: Component = () => {
     try {
       const dimensions = { width: size, height: size };
 
-      // Create coordinate texture and sampler at preview resolution
-      const coordTexture = await coordGenerator.createCoordinateTexture(
-        dimensions,
-        context,
-        1.0, // Default zoom
-        0.0, // Default pan X
-        0.0  // Default pan Y
-      );
-      const coordSampler = coordGenerator.createCoordinateSampler(context);
-
       // Use shader defaults for parameters
       const paramValues = new Map(shader.parameters.map(p => [p.name, p.default]));
 
@@ -977,6 +941,9 @@ export const App: Component = () => {
           shader,
           shaderId: shader.id,
           dimensions,
+          zoom: 1.0,  // Default zoom
+          panX: 0.0,  // Default pan X
+          panY: 0.0,  // Default pan Y
           labelSuffix: '-preview',
           parameterValues: paramValues,
           measureCompileTime: false,
@@ -998,8 +965,6 @@ export const App: Component = () => {
             async (ctx) => {
               const bindGroup = pipelineBuilder.createStandardBindGroup(
                 layout,
-                coordTexture,
-                coordSampler,
                 outputTexture,
                 dimensionsBuffer,
                 paramBuffer,
@@ -1014,8 +979,6 @@ export const App: Component = () => {
         } else {
           const bindGroup = pipelineBuilder.createStandardBindGroup(
             layout,
-            coordTexture,
-            coordSampler,
             outputTexture,
             dimensionsBuffer,
             paramBuffer

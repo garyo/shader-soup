@@ -74,8 +74,22 @@ export class CanvasRenderer {
    * @param canvas - Canvas element to configure
    */
   public configureCanvas(canvas: HTMLCanvasElement): void {
+    // Only configure if not already configured for this canvas
+    if (this.canvas === canvas && this.canvasContext) {
+      return; // Already configured
+    }
+
     this.canvas = canvas;
     this.canvasContext = this.context.configureCanvas(canvas);
+  }
+
+  /**
+   * Configure with an already-configured GPUCanvasContext (for OffscreenCanvas)
+   * @param canvasContext - Pre-configured GPU canvas context
+   */
+  public configureCanvasContext(canvasContext: GPUCanvasContext): void {
+    this.canvasContext = canvasContext;
+    this.canvas = null; // No HTMLCanvasElement for OffscreenCanvas
   }
 
   /**
@@ -84,8 +98,8 @@ export class CanvasRenderer {
    * @param sourceTexture - Source texture (rgba32float from compute shader)
    */
   public async renderToCanvas(sourceTexture: GPUTexture): Promise<void> {
-    if (!this.canvasContext || !this.canvas) {
-      throw new Error('Canvas not configured. Call configureCanvas() first.');
+    if (!this.canvasContext) {
+      throw new Error('Canvas not configured. Call configureCanvas() or configureCanvasContext() first.');
     }
 
     await this.initialize();

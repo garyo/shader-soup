@@ -201,7 +201,7 @@ export class GPUPostProcessor {
 
     // Check if pooled texture has wrong mip count (from previous runs)
     if (displayTexture && displayTexture.mipLevelCount !== mipLevelCount) {
-      console.log(`[GPUPostProcessor] Clearing pooled texture with wrong mip count (${displayTexture.mipLevelCount} → ${mipLevelCount})`);
+      // Recreate with correct mip count (happens after code changes)
       displayTexture.destroy();
       this.displayTexturePool.delete(displayPoolKey);
       displayTexture = undefined;
@@ -216,7 +216,7 @@ export class GPUPostProcessor {
         label: `display-texture-${shaderId}`,
       });
       this.displayTexturePool.set(displayPoolKey, displayTexture);
-      console.log(`[GPUPostProcessor] Created display texture with ${mipLevelCount} mip levels (${dimensions.width}×${dimensions.height} → ${dimensions.width/2}×${dimensions.height/2})`);
+      // Texture created and pooled (only logs once per shader unless mip count changes)
     }
 
     // Copy storage texture to filterable texture (mip level 0)
@@ -230,7 +230,7 @@ export class GPUPostProcessor {
     await device.queue.onSubmittedWorkDone();
 
     // Generate mipmaps for proper antialiased downsampling
-    await this.generateMipmaps(device, displayTexture, dimensions);
+    await this.generateMipmaps(device, displayTexture);
 
     // Return both textures:
     // - storageTexture: rgba32float for ImageData generation (App.tsx expects this format)
@@ -291,8 +291,7 @@ export class GPUPostProcessor {
    */
   private async generateMipmaps(
     device: GPUDevice,
-    texture: GPUTexture,
-    dimensions: { width: number; height: number }
+    texture: GPUTexture
   ): Promise<void> {
     await this.initMipmapPipeline();
 

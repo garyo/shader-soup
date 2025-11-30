@@ -93,29 +93,44 @@ MATRIX HELPERS
 - mul_vector(m,v): Multiply direction vector by 4x4 (w=0).`;
 
 const BINDING_REQUIREMENTS = `* Keep @group and @binding declarations with the REQUIRED binding layout:
-  - @binding(0): coordTexture: texture_2d<f32>
-  - @binding(1): coordSampler: sampler
-  - @binding(2): output: array<vec4<f32>>
-  - @binding(3): dimensions: Dimensions (uniform)
-  - @binding(4): params: Params (uniform, optional)`;
+  - @binding(0): output: texture_storage_2d<rgba32float, write>
+  - @binding(1): dimensions: Dimensions (uniform, includes zoom/pan)
+  - @binding(2): params: Params (uniform, optional)
+  - @binding(3-4): input texture/sampler (optional, for feedback/image processing)`;
 
-const COORDINATE_SAMPLING = ` * Input coordTexture is normalized, with 0,0 in the image center, -1 to +1 in X, with square texels.
-  * Calculate basic texCoord and sample coordinates like this:
-    let texCoord = vec2<f32>(
-      f32(id.x) / f32(dimensions.width),
-      f32(id.y) / f32(dimensions.height)
+const COORDINATE_SAMPLING = ` * Get normalized UV coordinates using the get_uv() helper function:
+  * The function returns vec2<f32> with:
+  *   - X: -1.0 (left) to 1.0 (right)
+  *   - Y: aspect-ratio scaled, centered at 0.0
+  * Example usage:
+    let coord = get_uv(
+      id.xy,
+      dimensions.width,
+      dimensions.height,
+      vec2<f32>(dimensions.panX, dimensions.panY),
+      dimensions.zoom
     );
-    let coord = textureSampleLevel(coordTexture, coordSampler, texCoord, 0.0).rg;`
+  * The Dimensions struct includes zoom and pan:
+    struct Dimensions {
+      width: u32,
+      height: u32,
+      zoom: f32,
+      _pad1: u32,
+      panX: f32,
+      panY: f32,
+      _pad2: u32,
+      _pad3: u32,
+    }`
 
 const PARAMETER_FORMAT = `PARAMETERS:
-* To add parameters, define a Params struct and bind it at @binding(4):
+* To add parameters, define a Params struct and bind it at @binding(2):
   struct Params {
     frequency: f32,  // min=0.1, max=10.0, default=2.0, step=0.1
     amplitude: f32,  // min=0.0, max=5.0, default=1.0, step=0.1
     speed: f32,      // min=-2.0, max=2.0, default=0.5, step=0.05
   }
 
-  @group(0) @binding(4) var<uniform> params: Params;
+  @group(0) @binding(2) var<uniform> params: Params;
 
 * The inline comment format is: // min=X, max=Y, default=Z, step=W
 * All fields are optional - if omitted, defaults are: min=0, max=10, default=1, step=0.01
@@ -451,12 +466,13 @@ ${UTILS_LIBRARY_DOCS}
 
 TECHNICAL REQUIREMENTS:
 - Maintain the REQUIRED binding structure:
-  * @binding(0): coordTexture: texture_2d<f32>
-  * @binding(1): coordSampler: sampler
-  * @binding(2): output buffer
-  * @binding(3): dimensions uniform
-  * @binding(4): params uniform (optional - if present, must have a Params struct)
-- Ensure coordinates are sampled using textureSampleLevel(coordTexture, coordSampler, texCoord, 0.0).rg
+  * @binding(0): output: texture_storage_2d<rgba32float, write>
+  * @binding(1): dimensions: Dimensions uniform (includes zoom/pan)
+  * @binding(2): params: Params uniform (optional - if present, must have a Params struct)
+  * @binding(3-4): input texture/sampler (optional, for feedback/image processing)
+- Get coordinates using the get_uv() helper function (automatically provided):
+  let coord = get_uv(id.xy, dimensions.width, dimensions.height, vec2<f32>(dimensions.panX, dimensions.panY), dimensions.zoom);
+- The Dimensions struct must include zoom and pan fields (see example below)
 - If the shader has parameters, they should be in a Params struct with inline comments: // min=X, max=Y, default=Z, step=W
 - Maintain @compute annotation`;
 

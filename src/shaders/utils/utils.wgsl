@@ -338,3 +338,39 @@ fn screen(a: f32, b: f32) -> f32 {
 fn screen_color(a: vec3<f32>, b: vec3<f32>) -> vec3<f32> {
    return a + b - a * b;
 }
+
+// ---------------------------------------------------------------------------
+// Coordinate Utilities
+// ---------------------------------------------------------------------------
+
+// Get normalized UV coordinates from pixel position
+// Returns vec2<f32> with:
+//   - X: -1.0 (left) to 1.0 (right)
+//   - Y: aspect-ratio scaled, centered at 0.0
+//
+// Parameters:
+//   - inxy: pixel coordinates (global_invocation_id.xy)
+//   - width: image width in pixels
+//   - height: image height in pixels
+//   - pan: pan offset (panX shifts view left, panY shifts view up)
+//   - zoom: zoom factor (>1 zooms in, <1 zooms out)
+//
+// Example usage:
+//   let uv = get_uv(id.xy, dimensions.width, dimensions.height, vec2f(0.0, 0.0), 1.0);
+fn get_uv(inxy: vec2<u32>, width: u32, height: u32, pan: vec2<f32>, zoom: f32) -> vec2<f32> {
+    let aspectRatio = f32(width) / f32(height);
+
+    // Normalize X to -1 to 1
+    let normalizedX = (f32(inxy.x) / f32(width - 1u)) * 2.0 - 1.0;
+
+    // Normalize Y to maintain aspect ratio, centered at 0
+    let normalizedY = ((f32(inxy.y) / f32(height - 1u)) * 2.0 - 1.0) / aspectRatio;
+
+    // Apply zoom and pan transformations
+    // Zoom: divide by zoom (zoom > 1 = zoom in, smaller coord range)
+    // Pan: subtract panX (positive panX shifts view left), add panY (positive panY shifts view up)
+    let transformedX = normalizedX / zoom - pan.x;
+    let transformedY = normalizedY / zoom + pan.y;
+
+    return vec2<f32>(transformedX, transformedY);
+}

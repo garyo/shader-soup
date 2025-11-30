@@ -210,36 +210,21 @@ export class ShaderCompiler {
     const errors: string[] = [];
 
     try {
-      // Create bind group layout matching our standard layout
+      // Create bind group layout matching our standard layout (updated - no coord texture)
       const layoutEntries: GPUBindGroupLayoutEntry[] = [
-        // Binding 0: Coordinate texture
+        // Binding 0: Output texture (storage)
         {
           binding: 0,
           visibility: GPUShaderStage.COMPUTE,
-          texture: {
-            sampleType: 'float',
+          storageTexture: {
+            access: 'write-only',
+            format: 'rgba32float' as GPUTextureFormat,
             viewDimension: '2d',
           },
         },
-        // Binding 1: Coordinate sampler
+        // Binding 1: Dimensions (includes zoom/pan)
         {
           binding: 1,
-          visibility: GPUShaderStage.COMPUTE,
-          sampler: {
-            type: 'filtering',
-          },
-        },
-        // Binding 2: Output buffer
-        {
-          binding: 2,
-          visibility: GPUShaderStage.COMPUTE,
-          buffer: {
-            type: 'storage',
-          },
-        },
-        // Binding 3: Dimensions
-        {
-          binding: 3,
           visibility: GPUShaderStage.COMPUTE,
           buffer: {
             type: 'uniform',
@@ -249,7 +234,7 @@ export class ShaderCompiler {
 
       if (hasParams) {
         layoutEntries.push({
-          binding: 4,
+          binding: 2,
           visibility: GPUShaderStage.COMPUTE,
           buffer: {
             type: 'uniform',
@@ -259,7 +244,7 @@ export class ShaderCompiler {
 
       if (hasInputTexture) {
         layoutEntries.push({
-          binding: 5,
+          binding: 3,
           visibility: GPUShaderStage.COMPUTE,
           texture: {
             sampleType: 'unfilterable-float',
@@ -267,7 +252,7 @@ export class ShaderCompiler {
           },
         });
         layoutEntries.push({
-          binding: 6,
+          binding: 4,
           visibility: GPUShaderStage.COMPUTE,
           sampler: {
             type: 'non-filtering',
@@ -308,17 +293,17 @@ export class ShaderCompiler {
 
   /**
    * Detect if shader source declares a binding that should be included in hasParams/hasInputTexture
-   * This helps catch mismatches where LLM declares @binding(4) but didn't add // @param comments
+   * This helps catch mismatches where LLM declares @binding(2) but didn't add // @param comments
    *
    * @param source - User shader source code (without prepended libraries)
    * @returns Object indicating which optional bindings are declared
    */
   public detectOptionalBindings(source: string): { hasParamsBinding: boolean; hasInputTextureBinding: boolean } {
-    // Check if shader declares @binding(4) for params
-    const hasParamsBinding = /@group\(0\)\s+@binding\(4\)/.test(source);
+    // Check if shader declares @binding(2) for params (updated from binding 4)
+    const hasParamsBinding = /@group\(0\)\s+@binding\(2\)/.test(source);
 
-    // Check if shader declares @binding(5) for input texture
-    const hasInputTextureBinding = /@group\(0\)\s+@binding\(5\)/.test(source);
+    // Check if shader declares @binding(3) for input texture (updated from binding 5)
+    const hasInputTextureBinding = /@group\(0\)\s+@binding\(3\)/.test(source);
 
     return { hasParamsBinding, hasInputTextureBinding };
   }
@@ -332,21 +317,19 @@ export class ShaderCompiler {
     const { bindings } = this.parseShaderMetadata(source);
     const errors: string[] = [];
 
-    // Expected bindings based on standard layout
+    // Expected bindings based on standard layout (updated - no coord texture)
     const expectedBindings = [
-      { binding: 0, expectedType: 'texture_2d<f32>', expectedName: 'coordTexture', description: 'coordinate texture' },
-      { binding: 1, expectedType: 'sampler', expectedName: 'coordSampler', description: 'coordinate sampler' },
-      { binding: 2, expectedType: 'storage', expectedName: 'output', description: 'output buffer' },
-      { binding: 3, expectedType: 'uniform', expectedName: 'dimensions', description: 'dimensions uniform' },
+      { binding: 0, expectedType: 'storage', expectedName: 'output', description: 'output texture' },
+      { binding: 1, expectedType: 'uniform', expectedName: 'dimensions', description: 'dimensions uniform (includes zoom/pan)' },
     ];
 
     if (hasParams) {
-      expectedBindings.push({ binding: 4, expectedType: 'uniform', expectedName: 'params', description: 'parameters uniform' });
+      expectedBindings.push({ binding: 2, expectedType: 'uniform', expectedName: 'params', description: 'parameters uniform' });
     }
 
     if (hasInputTexture) {
-      expectedBindings.push({ binding: 5, expectedType: 'texture_2d<f32>', expectedName: 'prevFrame', description: 'input texture' });
-      expectedBindings.push({ binding: 6, expectedType: 'sampler', expectedName: 'prevFrameSampler', description: 'input sampler' });
+      expectedBindings.push({ binding: 3, expectedType: 'texture_2d<f32>', expectedName: 'prevFrame', description: 'input texture' });
+      expectedBindings.push({ binding: 4, expectedType: 'sampler', expectedName: 'prevSampler', description: 'input sampler' });
     }
 
     // Check that all required bindings are present

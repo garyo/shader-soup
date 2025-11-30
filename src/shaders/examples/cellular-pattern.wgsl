@@ -5,6 +5,12 @@
 struct Dimensions {
   width: u32,
   height: u32,
+  zoom: f32,
+  _pad1: u32,
+  panX: f32,
+  panY: f32,
+  _pad2: u32,
+  _pad3: u32,
 }
 
 struct Params {
@@ -15,11 +21,9 @@ struct Params {
   hueShift: f32,  // min=0.0, max=6.28, default=0.0, step=0.1
 }
 
-@group(0) @binding(0) var coordTexture: texture_2d<f32>;
-@group(0) @binding(1) var coordSampler: sampler;
-@group(0) @binding(2) var output: texture_storage_2d<rgba32float, write>;
-@group(0) @binding(3) var<uniform> dimensions: Dimensions;
-@group(0) @binding(4) var<uniform> params: Params;
+@group(0) @binding(0) var output: texture_storage_2d<rgba32float, write>;
+@group(0) @binding(1) var<uniform> dimensions: Dimensions;
+@group(0) @binding(2) var<uniform> params: Params;
 
 @compute @workgroup_size(8, 8)
 fn main(@builtin(global_invocation_id) id: vec3<u32>) {
@@ -27,12 +31,14 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
     return;
   }
 
-  //   let index = id.y * dimensions.width + id.x; // Removed for texture output
-  let texCoord = vec2<f32>(
-    f32(id.x) / f32(dimensions.width),
-    f32(id.y) / f32(dimensions.height)
+  // Get normalized UV coordinates using helper function
+  let coord = get_uv(
+    id.xy,
+    dimensions.width,
+    dimensions.height,
+    vec2<f32>(dimensions.panX, dimensions.panY),
+    dimensions.zoom
   );
-  let coord = textureSampleLevel(coordTexture, coordSampler, texCoord, 0.0).rg;
 
   // Scale coordinates
   let p = coord * params.scale;

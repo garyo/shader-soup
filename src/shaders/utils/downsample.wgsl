@@ -27,6 +27,8 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
   var color = vec4<f32>(0.0, 0.0, 0.0, 0.0);
   let pixels_per_block = f32(params.factor * params.factor);
 
+  // TODO: this shifts toward origin a bit.
+  // Should really go from -dy/2 to dy/2, and handle edges properly
   for (var dy = 0u; dy < params.factor; dy++) {
     for (var dx = 0u; dx < params.factor; dx++) {
       let sx = tx * params.factor + dx;
