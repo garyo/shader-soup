@@ -258,9 +258,9 @@ export const App: Component = () => {
         description: 'RGB gradient generator with multiple mix modes',
       },
       {
-        name: 'Sine Wave (Textured)',
+        name: 'Polygon Shapes',
         source: sineWaveTexturedSource,
-        description: 'Colorful sine wave patterns with texture coordinates',
+        description: 'Layered polygon SDFs with smooth blending and glow',
       },
       // Feedback disabled - complicates evolution, hard to get interesting results
       // {

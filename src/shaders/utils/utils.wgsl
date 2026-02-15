@@ -8,12 +8,15 @@
 // ---------------------------------------------------------------------------
 
 // Clamp to [0,1]
-fn saturate(x: f32) -> f32 {
+fn saturate_f32(x: f32) -> f32 {
     return clamp(x, 0.0, 1.0);
 }
-
 fn saturate_v2(v: vec2<f32>) -> vec2<f32> {
     return clamp(v, vec2<f32>(0.0), vec2<f32>(1.0));
+}
+// saturate() takes vec3 — the most common case (colors)
+fn saturate(v: vec3<f32>) -> vec3<f32> {
+    return clamp(v, vec3<f32>(0.0), vec3<f32>(1.0));
 }
 fn saturate_v3(v: vec3<f32>) -> vec3<f32> {
     return clamp(v, vec3<f32>(0.0), vec3<f32>(1.0));
@@ -50,13 +53,13 @@ fn pingpong(x: f32, length: f32) -> f32 {
 
 // Smooth minimum (soft blend)
 fn smooth_min(a: f32, b: f32, k: f32) -> f32 {
-    let h = saturate(0.5 + 0.5 * (b - a) / k);
+    let h = saturate_f32(0.5 + 0.5 * (b - a) / k);
     return mix(b, a, h) - k * h * (1.0 - h);
 }
 
 // Smooth maximum
 fn smooth_max(a: f32, b: f32, k: f32) -> f32 {
-    let h = saturate(0.5 + 0.5 * (a - b) / k);
+    let h = saturate_f32(0.5 + 0.5 * (a - b) / k);
     return mix(a, b, h) - k * h * (1.0 - h);
 }
 
@@ -304,6 +307,124 @@ fn hexGrid(p: vec2f) -> vec4f {
 }
 
 // ---------------------------------------------------------------------------
+// 2D Signed Distance Functions (Polygons)
+// From Inigo Quilez: https://iquilezles.org/articles/distfunctions2d/
+// All return negative inside, positive outside.
+// ---------------------------------------------------------------------------
+
+// Equilateral triangle centered at origin, circumradius r
+fn sdEquilateralTriangle(p_in: vec2f, r: f32) -> f32 {
+    let k = sqrt(3.0);
+    var p = vec2f(abs(p_in.x) - r, p_in.y + r / k);
+    if (p.x + k * p.y > 0.0) {
+        p = vec2f(p.x - k * p.y, -k * p.x - p.y) / 2.0;
+    }
+    p = vec2f(p.x - clamp(p.x, -2.0 * r, 0.0), p.y);
+    return -length(p) * sign(p.y);
+}
+
+// Isosceles triangle: q.x = half-width at base, q.y = height
+fn sdTriangleIsosceles(p_in: vec2f, q: vec2f) -> f32 {
+    var p = vec2f(abs(p_in.x), p_in.y);
+    let a = p - q * clamp(dot(p, q) / dot(q, q), 0.0, 1.0);
+    let b = p - q * vec2f(clamp(p.x / q.x, 0.0, 1.0), 1.0);
+    let s = -sign(q.y);
+    let d = min(vec2f(dot(a, a), s * (p.x * q.y - p.y * q.x)),
+                vec2f(dot(b, b), s * (p.y - q.y)));
+    return -sqrt(d.x) * sign(d.y);
+}
+
+// General triangle with vertices p0, p1, p2
+fn sdTriangle(p: vec2f, p0: vec2f, p1: vec2f, p2: vec2f) -> f32 {
+    let e0 = p1 - p0;
+    let e1 = p2 - p1;
+    let e2 = p0 - p2;
+    let v0 = p - p0;
+    let v1 = p - p1;
+    let v2 = p - p2;
+    let pq0 = v0 - e0 * clamp(dot(v0, e0) / dot(e0, e0), 0.0, 1.0);
+    let pq1 = v1 - e1 * clamp(dot(v1, e1) / dot(e1, e1), 0.0, 1.0);
+    let pq2 = v2 - e2 * clamp(dot(v2, e2) / dot(e2, e2), 0.0, 1.0);
+    let s = sign(e0.x * e2.y - e0.y * e2.x);
+    let d = min(min(
+        vec2f(dot(pq0, pq0), s * (v0.x * e0.y - v0.y * e0.x)),
+        vec2f(dot(pq1, pq1), s * (v1.x * e1.y - v1.y * e1.x))),
+        vec2f(dot(pq2, pq2), s * (v2.x * e2.y - v2.y * e2.x)));
+    return -sqrt(d.x) * sign(d.y);
+}
+
+// Regular pentagon, circumradius r
+fn sdPentagon(p_in: vec2f, r: f32) -> f32 {
+    let k = vec3f(0.809016994, 0.587785252, 0.726542528);
+    var p = vec2f(abs(p_in.x), p_in.y);
+    p -= 2.0 * min(dot(vec2f(-k.x, k.y), p), 0.0) * vec2f(-k.x, k.y);
+    p -= 2.0 * min(dot(vec2f(k.x, k.y), p), 0.0) * vec2f(k.x, k.y);
+    p -= vec2f(clamp(p.x, -r * k.z, r * k.z), r);
+    return length(p) * sign(p.y);
+}
+
+// Regular hexagon, circumradius r
+fn sdHexagon(p_in: vec2f, r: f32) -> f32 {
+    let k = vec3f(-0.866025404, 0.5, 0.577350269);
+    var p = abs(p_in);
+    p -= 2.0 * min(dot(k.xy, p), 0.0) * k.xy;
+    p -= vec2f(clamp(p.x, -k.z * r, k.z * r), r);
+    return length(p) * sign(p.y);
+}
+
+// Regular octagon, circumradius r
+fn sdOctagon(p_in: vec2f, r: f32) -> f32 {
+    let k = vec3f(-0.9238795325, 0.3826834323, 0.4142135623);
+    var p = abs(p_in);
+    p -= 2.0 * min(dot(vec2f(k.x, k.y), p), 0.0) * vec2f(k.x, k.y);
+    p -= 2.0 * min(dot(vec2f(-k.x, k.y), p), 0.0) * vec2f(-k.x, k.y);
+    p -= vec2f(clamp(p.x, -k.z * r, k.z * r), r);
+    return length(p) * sign(p.y);
+}
+
+// Regular star: r = outer radius, n = number of points, m = star ratio (2 < m < n)
+fn sdStar(p_in: vec2f, r: f32, n: i32, m: f32) -> f32 {
+    let an = 3.141593 / f32(n);
+    let en = 3.141593 / m;
+    let acs = vec2f(cos(an), sin(an));
+    let ecs = vec2f(cos(en), sin(en));
+    // GLSL-style mod for negative values: x - y * floor(x/y)
+    let raw_angle = atan2(p_in.x, p_in.y);
+    let bn = raw_angle - 2.0 * an * floor(raw_angle / (2.0 * an)) - an;
+    var p = length(p_in) * vec2f(cos(bn), abs(sin(bn)));
+    p -= r * acs;
+    p += ecs * clamp(-dot(p, ecs), 0.0, r * acs.y / ecs.y);
+    return length(p) * sign(p.x);
+}
+
+// Pentagram (five-pointed star), circumradius r
+fn sdPentagram(p_in: vec2f, r: f32) -> f32 {
+    let k1x = 0.809016994;
+    let k2x = 0.309016994;
+    let k1y = 0.587785252;
+    let k2y = 0.951056516;
+    let k1z = 0.726542528;
+    let v1 = vec2f(k1x, -k1y);
+    let v2 = vec2f(-k1x, -k1y);
+    let v3 = vec2f(k2x, -k2y);
+    var p = vec2f(abs(p_in.x), p_in.y);
+    p -= 2.0 * max(dot(v1, p), 0.0) * v1;
+    p -= 2.0 * max(dot(v2, p), 0.0) * v2;
+    p = vec2f(abs(p.x), p.y - r);
+    return length(p - v3 * clamp(dot(p, v3), 0.0, k1z * r)) * sign(p.y * v3.x - p.x * v3.y);
+}
+
+// Hexagram (Star of David), circumradius r
+fn sdHexagram(p_in: vec2f, r: f32) -> f32 {
+    let k = vec4f(-0.5, 0.8660254038, 0.5773502692, 1.7320508076);
+    var p = abs(p_in);
+    p -= 2.0 * min(dot(k.xy, p), 0.0) * k.xy;
+    p -= 2.0 * min(dot(k.yx, p), 0.0) * k.yx;
+    p -= vec2f(clamp(p.x, r * k.z, r * k.w), r);
+    return length(p) * sign(p.y);
+}
+
+// ---------------------------------------------------------------------------
 // Matrix Helpers
 // ---------------------------------------------------------------------------
 
@@ -331,7 +452,11 @@ fn mul_vector(m: mat4x4<f32>, v: vec3<f32>) -> vec3<f32> {
 // Compositing helpers
 // ---------------------------------------------------------------------------
 
-fn screen(a: f32, b: f32) -> f32 {
+fn screen_f32(a: f32, b: f32) -> f32 {
+   return a + b - a * b;
+}
+
+fn screen(a: vec3<f32>, b: vec3<f32>) -> vec3<f32> {
    return a + b - a * b;
 }
 

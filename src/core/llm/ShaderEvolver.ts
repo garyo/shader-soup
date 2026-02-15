@@ -352,125 +352,121 @@ export class ShaderEvolver {
     temperature: number,
     model: string
   ): Promise<EvolutionResult[]> {
-    try {
-      console.log(`Generating ${count} children sequentially (with memory context)`);
-      const results: EvolutionResult[] = [];
+    const batchStart = performance.now();
+    console.log(`Generating ${count} children in parallel`);
 
-      // Generate shaders one at a time so each can see the previous ones
-      for (let i = 0; i < count; i++) {
-        try {
-          console.log(`\n=== Generating child ${i + 1}/${count} ===`);
+    // Track how many have completed for progressive display
+    let completedCount = 0;
 
-          // Report progress: starting child
-          this.onProgress?.({
-            type: 'child',
-            currentChild: i + 1,
-            totalChildren: count,
-            currentExperiment: 0,
-            maxExperiments: this.experimentsPerChild,
-          });
+    const generateChild = async (i: number): Promise<EvolutionResult> => {
+      const childStart = performance.now();
+      try {
+        console.log(`\n=== Generating child ${i + 1}/${count} ===`);
 
-          // Generate a single mutation with memory context
-          const mutatedShaders = await this.batchMutateShader(
-            parentShader.source,
-            1, // Generate one at a time
-            temperature,
-            model
-          );
+        // Generate a single mutation
+        const mutateStart = performance.now();
+        const mutatedShaders = await this.batchMutateShader(
+          parentShader.source,
+          1,
+          temperature,
+          model
+        );
+        const mutateTime = performance.now() - mutateStart;
 
-          if (mutatedShaders.length === 0) {
-            results.push({
-              success: false,
-              error: 'No shader generated',
-            });
-            continue;
-          }
-
-          const mutatedShader = mutatedShaders[0];
-          const mutatedSource = mutatedShader.shader;
-          const changelog = mutatedShader.changelog;
-
-          // Debug until it compiles
-          const debugResult = await this.debugShader(mutatedSource, model);
-
-          if (!debugResult.success) {
-            results.push({
-              success: false,
-              error: `Failed to compile after ${this.maxDebugAttempts} attempts`,
-              debugAttempts: this.maxDebugAttempts,
-            });
-            continue;
-          }
-
-          // Parse parameters and iterations
-          const parameters = this.parameterManager.parseParameters(debugResult.source);
-          const iterations = this.parameterManager.parseIterations(debugResult.source);
-          let namedParameters = parameters;
-          const doParamRename = false;
-          if (doParamRename) {
-            // Update parameter names
-            namedParameters = await this.updateParameterNames(debugResult.source, parameters, model);
-          }
-
-          // Create child shader with hierarchical naming
-          const childNumber = i + 1;
-          const uniqueSuffix = crypto.randomUUID().slice(0, 8);
-          const childShader: ShaderDefinition = {
-            id: crypto.randomUUID(),
-            name: `${parentShader.name}.${childNumber}`, // Hierarchical name (e.g., "Sine Wave.1.3.2")
-            cacheKey: `${parentShader.cacheKey}-${childNumber}-${uniqueSuffix}`, // Unique cache key
-            source: debugResult.source,
-            parameters: namedParameters,
-            iterations: iterations,
-            description: `Evolved from "${parentShader.name}"`,
-            changelog: changelog,
-            createdAt: new Date(),
-            modifiedAt: new Date(),
-          };
-
-          // Add to memory IMMEDIATELY so the next shader can see it
-          this.memory.addEntry({
-            shaderSource: debugResult.source,
-            changelog: changelog,
-            type: 'mutation',
-            parentInfo: `Evolution of "${parentShader.name}"`,
-          });
-
-          const result: EvolutionResult = {
-            success: true,
-            shader: childShader,
-          };
-          results.push(result);
-
-          console.log(`Child ${i + 1} generated successfully. Memory now has ${this.memory.getEntryCount()} entries.`);
-
-          // Call onChildCompleted callback for progressive display
-          if (this.onChildCompleted) {
-            await this.onChildCompleted(result, i, count);
-          }
-        } catch (error) {
-          const result: EvolutionResult = {
-            success: false,
-            error: error instanceof Error ? error.message : 'Unknown error during evolution',
-          };
-          results.push(result);
-
-          // Call onChildCompleted callback even for failures
-          if (this.onChildCompleted) {
-            await this.onChildCompleted(result, i, count);
-          }
+        if (mutatedShaders.length === 0) {
+          return { success: false, error: 'No shader generated' };
         }
-      }
 
-      return results;
-    } catch (error) {
-      // If batch fails entirely, return empty results
-      console.error('Batch evolution failed:', error);
-      return Array(count).fill({
-        success: false,
-        error: error instanceof Error ? error.message : 'Batch evolution failed',
+        const mutatedShader = mutatedShaders[0];
+        const mutatedSource = mutatedShader.shader;
+        const changelog = mutatedShader.changelog;
+        const llmName = mutatedShader.name;
+
+        // Debug until it compiles
+        const debugStart = performance.now();
+        const debugResult = await this.debugShader(mutatedSource, model);
+        const debugTime = performance.now() - debugStart;
+
+        if (!debugResult.success) {
+          return {
+            success: false,
+            error: `Failed to compile after ${this.maxDebugAttempts} attempts`,
+            debugAttempts: this.maxDebugAttempts,
+          };
+        }
+
+        // Parse parameters and iterations
+        const parameters = this.parameterManager.parseParameters(debugResult.source);
+        const iterations = this.parameterManager.parseIterations(debugResult.source);
+
+        // Create child shader with LLM-provided name or fallback
+        const childNumber = i + 1;
+        const uniqueSuffix = crypto.randomUUID().slice(0, 8);
+        const childShader: ShaderDefinition = {
+          id: crypto.randomUUID(),
+          name: llmName || `${parentShader.name}.${childNumber}`,
+          cacheKey: `${parentShader.cacheKey}-${childNumber}-${uniqueSuffix}`,
+          source: debugResult.source,
+          parameters,
+          iterations,
+          description: `Evolved from "${parentShader.name}"`,
+          changelog,
+          createdAt: new Date(),
+          modifiedAt: new Date(),
+        };
+
+        // Add to memory for future evolutions
+        this.memory.addEntry({
+          shaderSource: debugResult.source,
+          changelog,
+          type: 'mutation',
+          parentInfo: `Evolution of "${parentShader.name}"`,
+        });
+
+        const childTime = performance.now() - childStart;
+        console.log(`[TIMING] Child ${i + 1}/${count} complete in ${(childTime / 1000).toFixed(1)}s — mutate: ${(mutateTime / 1000).toFixed(1)}s, debug: ${(debugTime / 1000).toFixed(1)}s`);
+
+        return { success: true, shader: childShader };
+      } catch (error) {
+        const childTime = performance.now() - childStart;
+        console.log(`[TIMING] Child ${i + 1}/${count} failed in ${(childTime / 1000).toFixed(1)}s: ${error}`);
+        return {
+          success: false,
+          error: error instanceof Error ? error.message : 'Unknown error during evolution',
+        };
+      }
+    };
+
+    // Launch all children in parallel
+    const promises = Array.from({ length: count }, (_, i) => {
+      return generateChild(i).then(async (result) => {
+        completedCount++;
+        // Report progress
+        this.onProgress?.({
+          type: 'child',
+          currentChild: completedCount,
+          totalChildren: count,
+        });
+        // Progressive display as each child completes
+        if (this.onChildCompleted) {
+          await this.onChildCompleted(result, i, count);
+        }
+        return { index: i, result };
       });
-    }
+    });
+
+    const settled = await Promise.all(promises);
+
+    // Return results in original order
+    const results = settled
+      .sort((a, b) => a.index - b.index)
+      .map(s => s.result);
+
+    const batchTime = performance.now() - batchStart;
+    const successCount = results.filter(r => r.success).length;
+    console.log(`[TIMING] Batch complete: ${successCount}/${count} succeeded in ${(batchTime / 1000).toFixed(1)}s`);
+
+    return results;
   }
 
 
@@ -654,6 +650,16 @@ export class ShaderEvolver {
 
           renderCount++;
           await this.handleRenderRequest(messages, message, renderToolUse, renderCount, config.maxRenders, config.operationType);
+          // If that was the last allowed render, tell the LLM to output now (saves a round-trip)
+          if (renderCount >= config.maxRenders) {
+            const lastMsg = messages[messages.length - 1];
+            if (lastMsg.role === 'user' && Array.isArray(lastMsg.content)) {
+              (lastMsg.content as Array<any>).push({
+                type: 'text',
+                text: `That was your last experimental render (${renderCount}/${config.maxRenders}). Now use the shader_output tool to provide your ${config.count} final ${config.operationType === 'mashup' ? 'mashup ' : ''}variation(s).`,
+              });
+            }
+          }
           continue;
         }
 
@@ -691,123 +697,119 @@ export class ShaderEvolver {
       throw new Error('Mashup requires at least 2 parent shaders');
     }
 
-    try {
-      console.log(`Generating ${count} mashup variations sequentially (with memory context)`);
-      const results: EvolutionResult[] = [];
-      const parentNames = parentShaders.map(s => s.name).join(' + ');
+    const batchStart = performance.now();
+    const parentNames = parentShaders.map(s => s.name).join(' + ');
+    console.log(`Generating ${count} mashup variations in parallel`);
 
-      // Generate mashups one at a time so each can see the previous ones
-      for (let i = 0; i < count; i++) {
-        try {
-          console.log(`\n=== Generating mashup ${i + 1}/${count} ===`);
+    let completedCount = 0;
 
-          const promptParams: MashupPromptParams = {
-            shaders: parentShaders.map(shader => ({
-              name: shader.name,
-              source: shader.source,
-            })),
-            count: 1, // Generate one at a time
-            temperature: temperature,
-          };
+    const generateMashup = async (i: number): Promise<EvolutionResult> => {
+      const childStart = performance.now();
+      try {
+        console.log(`\n=== Generating mashup ${i + 1}/${count} ===`);
 
-          const mashupShaders = await this.batchMashupShader(promptParams, model);
+        const promptParams: MashupPromptParams = {
+          shaders: parentShaders.map(shader => ({
+            name: shader.name,
+            source: shader.source,
+          })),
+          count: 1,
+          temperature,
+        };
 
-          if (mashupShaders.length === 0) {
-            results.push({
-              success: false,
-              error: 'No mashup generated',
-            });
-            continue;
-          }
+        const mashupShaders = await this.batchMashupShader(promptParams, model);
 
-          const mashupData = mashupShaders[0];
-          const mashupSource = mashupData.shader;
-          const changelog = mashupData.changelog;
-          const llmName = mashupData.name;
-
-          // Debug until it compiles
-          const debugResult = await this.debugShader(mashupSource, model);
-
-          if (!debugResult.success) {
-            results.push({
-              success: false,
-              error: `Failed to compile after ${this.maxDebugAttempts} attempts`,
-              debugAttempts: this.maxDebugAttempts,
-            });
-            continue;
-          }
-
-          // Parse parameters and iterations
-          const parameters = this.parameterManager.parseParameters(debugResult.source);
-          const iterations = this.parameterManager.parseIterations(debugResult.source);
-          let namedParameters = parameters;
-          const doParamRename = false;
-          if (doParamRename) {
-            // Update parameter names
-            namedParameters = await this.updateParameterNames(debugResult.source, parameters, model);
-          }
-
-          // Create mashup shader with LLM-provided name or fallback
-          const childNumber = i + 1;
-          const uniqueSuffix = crypto.randomUUID().slice(0, 8);
-          const mashupName = llmName || `Mashup ${childNumber}: ${parentNames}`;
-
-          const mashupShaderDef: ShaderDefinition = {
-            id: crypto.randomUUID(),
-            name: mashupName,
-            cacheKey: `mashup-${uniqueSuffix}`, // Unique cache key
-            source: debugResult.source,
-            parameters: namedParameters,
-            iterations: iterations,
-            description: `Mashup of: ${parentNames}`,
-            changelog: changelog,
-            createdAt: new Date(),
-            modifiedAt: new Date(),
-          };
-
-          // Add to memory IMMEDIATELY so the next mashup can see it
-          this.memory.addEntry({
-            shaderSource: debugResult.source,
-            changelog: changelog,
-            type: 'mashup',
-            parentInfo: `Mashup of: ${parentNames}`,
-          });
-
-          const result: EvolutionResult = {
-            success: true,
-            shader: mashupShaderDef,
-          };
-          results.push(result);
-
-          console.log(`Mashup ${i + 1} generated successfully. Memory now has ${this.memory.getEntryCount()} entries.`);
-
-          // Call onChildCompleted callback for progressive display (works for mashups too)
-          if (this.onChildCompleted) {
-            await this.onChildCompleted(result, i, count);
-          }
-        } catch (error) {
-          const result: EvolutionResult = {
-            success: false,
-            error: error instanceof Error ? error.message : 'Unknown error during mashup',
-          };
-          results.push(result);
-
-          // Call callback even for failures
-          if (this.onChildCompleted) {
-            await this.onChildCompleted(result, i, count);
-          }
+        if (mashupShaders.length === 0) {
+          return { success: false, error: 'No mashup generated' };
         }
-      }
 
-      return results;
-    } catch (error) {
-      // If mashup fails entirely, return empty results
-      console.error('Mashup evolution failed:', error);
-      return Array(count).fill({
-        success: false,
-        error: error instanceof Error ? error.message : 'Mashup evolution failed',
+        const mashupData = mashupShaders[0];
+        const mashupSource = mashupData.shader;
+        const changelog = mashupData.changelog;
+        const llmName = mashupData.name;
+
+        // Debug until it compiles
+        const debugResult = await this.debugShader(mashupSource, model);
+
+        if (!debugResult.success) {
+          return {
+            success: false,
+            error: `Failed to compile after ${this.maxDebugAttempts} attempts`,
+            debugAttempts: this.maxDebugAttempts,
+          };
+        }
+
+        // Parse parameters and iterations
+        const parameters = this.parameterManager.parseParameters(debugResult.source);
+        const iterations = this.parameterManager.parseIterations(debugResult.source);
+
+        // Create mashup shader with LLM-provided name or fallback
+        const childNumber = i + 1;
+        const uniqueSuffix = crypto.randomUUID().slice(0, 8);
+        const mashupName = llmName || `Mashup ${childNumber}: ${parentNames}`;
+
+        const mashupShaderDef: ShaderDefinition = {
+          id: crypto.randomUUID(),
+          name: mashupName,
+          cacheKey: `mashup-${uniqueSuffix}`,
+          source: debugResult.source,
+          parameters,
+          iterations,
+          description: `Mashup of: ${parentNames}`,
+          changelog,
+          createdAt: new Date(),
+          modifiedAt: new Date(),
+        };
+
+        // Add to memory for future evolutions
+        this.memory.addEntry({
+          shaderSource: debugResult.source,
+          changelog,
+          type: 'mashup',
+          parentInfo: `Mashup of: ${parentNames}`,
+        });
+
+        const childTime = performance.now() - childStart;
+        console.log(`[TIMING] Mashup ${i + 1}/${count} complete in ${(childTime / 1000).toFixed(1)}s`);
+
+        return { success: true, shader: mashupShaderDef };
+      } catch (error) {
+        const childTime = performance.now() - childStart;
+        console.log(`[TIMING] Mashup ${i + 1}/${count} failed in ${(childTime / 1000).toFixed(1)}s: ${error}`);
+        return {
+          success: false,
+          error: error instanceof Error ? error.message : 'Unknown error during mashup',
+        };
+      }
+    };
+
+    // Launch all mashups in parallel
+    const promises = Array.from({ length: count }, (_, i) => {
+      return generateMashup(i).then(async (result) => {
+        completedCount++;
+        this.onProgress?.({
+          type: 'child',
+          currentChild: completedCount,
+          totalChildren: count,
+        });
+        if (this.onChildCompleted) {
+          await this.onChildCompleted(result, i, count);
+        }
+        return { index: i, result };
       });
-    }
+    });
+
+    const settled = await Promise.all(promises);
+
+    const results = settled
+      .sort((a, b) => a.index - b.index)
+      .map(s => s.result);
+
+    const batchTime = performance.now() - batchStart;
+    const successCount = results.filter(r => r.success).length;
+    console.log(`[TIMING] Mashup batch complete: ${successCount}/${count} succeeded in ${(batchTime / 1000).toFixed(1)}s`);
+
+    return results;
   }
 
   /**
@@ -888,7 +890,7 @@ export class ShaderEvolver {
     count: number,
     temperature: number,
     model: string
-  ): Promise<Array<{ shader: string; changelog?: string }>> {
+  ): Promise<Array<{ name?: string; shader: string; changelog?: string }>> {
     const promptParams: BatchMutationPromptParams = {
       shaderSource,
       count,
@@ -904,29 +906,8 @@ export class ShaderEvolver {
 
     console.log(`Batch mutating with ${model}, memory entries: ${this.memory.getEntryCount()}`);
 
-    // Render parent shader to image for visual feedback (128x128 for speed)
-    console.log('Rendering parent shader for visual feedback...');
-    const parentImageBase64 = await this.renderShaderToBase64(shaderSource, 128);
-
-    // Create messages array for conversation with image
+    // Create messages array for conversation
     const contentBlocks: Anthropic.MessageParam['content'] = [];
-
-    // Add image if rendering succeeded
-    if (parentImageBase64) {
-      contentBlocks.push({
-        type: 'image',
-        source: {
-          type: 'base64',
-          media_type: 'image/png',
-          data: parentImageBase64,
-        },
-      });
-      contentBlocks.push({
-        type: 'text',
-        text: 'Above is the visual output of the parent shader you are mutating.',
-      });
-      console.log(`Visual feedback image size: ${Math.round(parentImageBase64.length / 1024)}KB`);
-    }
 
     // Add the main prompt
     contentBlocks.push({
@@ -942,7 +923,7 @@ export class ShaderEvolver {
     ];
 
     // Use common tool conversation handler
-    return await this.handleToolConversation<{ shader: string; changelog?: string }>(
+    return await this.handleToolConversation<{ name?: string; shader: string; changelog?: string }>(
       system,
       messages,
       model,
@@ -961,12 +942,99 @@ export class ShaderEvolver {
    * Debug shader with compilation feedback loop
    * Now includes binding validation to catch runtime errors
    */
+  /**
+   * Overload resolution table: maps (funcName, gotType) -> correctFuncName.
+   * When WGSL reports a type mismatch on a library function, we auto-rewrite
+   * the call to the correct variant — no LLM round-trip needed.
+   */
+  private static readonly OVERLOAD_TABLE: Record<string, Record<string, string>> = {
+    // saturate: default is vec3 (colors), scalar needs _f32
+    'saturate': {
+      'f32': 'saturate_f32',
+      'vec2<f32>': 'saturate_v2',
+      'vec3<f32>': 'saturate',
+      'vec4<f32>': 'saturate_v4',
+    },
+    'saturate_f32': {
+      'vec3<f32>': 'saturate',
+      'vec2<f32>': 'saturate_v2',
+      'vec4<f32>': 'saturate_v4',
+    },
+    'saturate_v3': {
+      'f32': 'saturate_f32',
+      'vec2<f32>': 'saturate_v2',
+      'vec4<f32>': 'saturate_v4',
+    },
+    // screen: default is vec3, scalar needs _f32
+    'screen': {
+      'f32': 'screen_f32',
+      'vec3<f32>': 'screen',
+    },
+    'screen_f32': {
+      'vec3<f32>': 'screen',
+    },
+    'screen_color': {
+      'f32': 'screen_f32',
+      'vec3<f32>': 'screen_color',
+    },
+  };
+
+  /**
+   * Try to auto-fix type mismatch errors by resolving overloaded function names.
+   * Returns the fixed source if any fixes were applied, or null if no fixes possible.
+   */
+  private tryAutoFixOverloads(source: string, errors: Array<{ line?: number; column?: number; message: string }>): string | null {
+    // Match: "type mismatch for argument N in call to 'funcName', expected 'expectedType', got 'gotType'"
+    const mismatchPattern = /type mismatch for argument \d+ in call to '(\w+)', expected '([^']+)', got '([^']+)'/;
+
+    let fixedSource = source;
+    let fixCount = 0;
+
+    for (const error of errors) {
+      const match = error.message.match(mismatchPattern);
+      if (!match) continue;
+
+      const [, funcName, _expectedType, gotType] = match;
+      const overloads = ShaderEvolver.OVERLOAD_TABLE[funcName];
+      if (!overloads) continue;
+
+      const correctFunc = overloads[gotType];
+      if (!correctFunc || correctFunc === funcName) continue;
+
+      // Replace the function name at the error line
+      if (error.line) {
+        const lines = fixedSource.split('\n');
+        // error.line is 1-indexed, but includes the library prefix offset
+        // The source we have is user code only, but errors reference the full source with library prefix
+        // We need to account for the library prefix offset
+        const libOffset = this.compiler.getUserCodeLineOffset();
+        const userLine = error.line - libOffset - 1; // Convert to 0-indexed user code line
+
+        if (userLine >= 0 && userLine < lines.length) {
+          // Replace the function call on this specific line
+          const oldLine = lines[userLine];
+          // Use word boundary to avoid partial matches (e.g., don't replace 'saturate' inside 'saturate_v2')
+          const funcRegex = new RegExp(`\\b${funcName}\\s*\\(`);
+          if (funcRegex.test(oldLine)) {
+            lines[userLine] = oldLine.replace(funcRegex, `${correctFunc}(`);
+            fixedSource = lines.join('\n');
+            fixCount++;
+            console.log(`[AUTO-FIX] Line ${error.line}: ${funcName}() → ${correctFunc}() (arg was ${gotType})`);
+          }
+        }
+      }
+    }
+
+    return fixCount > 0 ? fixedSource : null;
+  }
+
   private async debugShader(
     shaderSource: string,
     model: string
   ): Promise<{ success: boolean; source: string; attempts: number }> {
     let currentSource = shaderSource;
     let attempts = 0;
+    let autoFixApplied = false; // Only try auto-fix once to prevent loops
 
     while (attempts < this.maxDebugAttempts) {
       attempts++;
@@ -975,6 +1043,18 @@ export class ShaderEvolver {
       const result = await this.compiler.compile(currentSource, `debug-attempt-${attempts}`);
 
       if (!result.success) {
+        // First try auto-fixing overload mismatches (instant, no LLM needed)
+        if (!autoFixApplied) {
+          const autoFixed = this.tryAutoFixOverloads(currentSource, result.errors);
+          if (autoFixed) {
+            console.log(`[AUTO-FIX] Applied overload fixes on attempt ${attempts}, retrying compile`);
+            currentSource = autoFixed;
+            autoFixApplied = true;
+            attempts--; // Don't count auto-fix as a debug attempt
+            continue;
+          }
+        }
+
         // Compilation failed - ask LLM to fix
         if (attempts < this.maxDebugAttempts) {
           const errorMessage = ShaderCompiler.formatErrors(result.errors);

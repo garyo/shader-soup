@@ -39,9 +39,9 @@ They are safe, branch-minimal, and designed for compute shaders.
 These functions are automatically provided - DO NOT redefine them!
 
 SCALAR / VECTOR MATH
-- saturate(x): Clamp x to [0,1].
+- saturate(v: vec3): Clamp vec3 to [0,1] (most common — use for colors).
+- saturate_f32(x): Clamp scalar f32 to [0,1].
 - saturate_v2(v): Clamp vec2 to [0,1].
-- saturate_v3(v): Clamp vec3 to [0,1].
 - saturate_v4(v): Clamp vec4 to [0,1].
 - inv_lerp(a,b,v): Return normalized position of v in [a,b].
 - remap(v, inMin,inMax,outMin,outMax): Map v from one range to another.
@@ -70,8 +70,8 @@ COLOR HELPERS
 - srgb_to_linear(c): Convert sRGB to linear RGB.
 - hsv_to_rgb(h,s,v): Convert HSV to RGB (h in radians 0 to 2π, s and v in 0 to 1).
 - rgb_to_hsv(rgb): Convert RGB to HSV (returns vec3(h,s,v) with h in radians 0 to 2π).
-- screen(a: f32, b: f32) -> f32: "screen" operator, nice for combining 0-1 values
-- screen(a: vec3<f32>, b: vec3<f32>) -> vec3<f32>: "screen" operator, nice for combining 0-1 color values (e.g. RGB). Use this instead of + for better results.
+- screen(a: vec3<f32>, b: vec3<f32>) -> vec3<f32>: "screen" blend operator for combining 0-1 color values (e.g. RGB). Use this instead of + for better results.
+- screen_f32(a: f32, b: f32) -> f32: scalar "screen" blend operator for combining 0-1 values.
 
 
 BIT OPERATIONS
@@ -86,6 +86,20 @@ GEOMETRY
   // mirror: if true, mirrors every other sector for true reflection symmetry
 - hexGrid(p: vec2f) -> vec4f: hexagonal grid. Returns: xy = cell coordinates, z = cell ID hash, w = distance from center
 
+2D SIGNED DISTANCE FUNCTIONS (POLYGONS) - great for geometric art, logos, tiling, and abstract patterns!
+All return negative inside, positive outside (from Inigo Quilez). Use these to create crisp geometric shapes:
+- sdEquilateralTriangle(p: vec2f, r: f32) -> f32: Equilateral triangle, circumradius r
+- sdTriangleIsosceles(p: vec2f, q: vec2f) -> f32: Isosceles triangle, q.x=half-width, q.y=height
+- sdTriangle(p: vec2f, p0: vec2f, p1: vec2f, p2: vec2f) -> f32: General triangle with 3 vertices
+- sdPentagon(p: vec2f, r: f32) -> f32: Regular pentagon, circumradius r
+- sdHexagon(p: vec2f, r: f32) -> f32: Regular hexagon, circumradius r
+- sdOctagon(p: vec2f, r: f32) -> f32: Regular octagon, circumradius r
+- sdStar(p: vec2f, r: f32, n: i32, m: f32) -> f32: Regular star, r=outer radius, n=points, m=star ratio (2 < m < n)
+- sdPentagram(p: vec2f, r: f32) -> f32: Pentagram (five-pointed star), circumradius r
+- sdHexagram(p: vec2f, r: f32) -> f32: Hexagram (Star of David), circumradius r
+Techniques: smooth_min/smooth_max to blend shapes organically, step/smoothstep for crisp/soft edges,
+  abs(d) for outlines, fract(d*N) for concentric rings, noise to warp coordinates before SDF for organic geometry,
+  repeat coordinates with fract()/wrap() to tile shapes, combine multiple SDFs with min/max for boolean ops.
 
 MATRIX HELPERS
 - outer(a,b): Outer product matrix.
@@ -211,20 +225,16 @@ export function createMashupPrompt(params: MashupPromptParams): PromptWithSystem
 
 ${shaderList}
 
-EXPERIMENTATION WORKFLOW:
-- You have access to a render_shader tool that lets you SEE what your mashup looks like!
-- Use this to try different combination strategies before committing
-- You can render up to 3 test shaders to explore the creative space
-- Experiment boldly - you can iterate until you find something visually interesting
-- Once you've found ${params.count} compelling mashups through experimentation, output them with shader_output
+EXPERIMENTATION (OPTIONAL):
+- You have access to a render_shader tool that lets you SEE what your mashup looks like
+- You already have images of the parent shaders above, so DO NOT re-render them
+- If you're confident in your mashup, skip experimenting and go DIRECTLY to shader_output — this is faster and preferred
+- Only use render_shader if you're truly unsure and want to test a creative choice
+- You can render up to 3 test shaders, but 0 is fine if you're confident
 
-SELECTION CRITERIA FOR FINAL OUTPUT:
+SELECTION CRITERIA:
 - Prefer visually interesting, complex, and dynamic patterns
-- Avoid repetitive, boring, or overly simple results
-- Choose variations that are aesthetically compelling and have visual depth
-- Select shaders that successfully combine techniques in novel ways
-- If an experiment looks bland or uninteresting, try a different approach
-- If your first (or any) experiment looks good, it's OK to use that to save time - you don't always have to try all available experiments
+- Choose variations that are aesthetically compelling and combine techniques in novel ways
 
 MASHUP GUIDELINES:
 - Generate EXACTLY ${params.count} mashup variations
@@ -284,6 +294,7 @@ MUTATION GUIDELINES:
 - Don't repeat yourself; always try something different from previous attempts
 - Ideas: change color calculations, add new mathematical functions (sin, cos, abs, fract, mix), alter patterns, combine operations differently, use different coordinate transformations
 - USE THE NOISE LIBRARY: Incorporate perlinNoise2, fbmPerlin, cellularNoise, turbulence, domainWarp, and other noise functions for organic patterns
+- USE SDF SHAPES: Try sdHexagon, sdStar, sdPentagram, sdEquilateralTriangle, sdOctagon etc. for crisp geometric forms. Combine with smooth_min for organic blends, fract() for rings, or noise for warped geometry
 - IMPORTANT: Make each mutation VISUALLY DISTINCT from the original and from previous mutations
 - Try different approaches: spiral patterns, wave interference, cellular automata, fractals, noise functions (Perlin, FBM, cellular, turbulence)
 - Vary the mathematical operations: use different combinations of trig functions, exponentials, power functions, AND noise functions
@@ -319,20 +330,24 @@ NOISE LIBRARY EXAMPLES:
   let warped = domainWarp(coord * 4.0, 0.5);  // Organic distortion
   let cells = cellularNoise(coord * 8.0);     // Cell-like patterns
 
-EXPERIMENTATION WORKFLOW:
-- You have access to a render_shader tool that lets you SEE what a shader looks like!
-- Use this tool to experiment with different ideas before finalizing your variations
-- Try bold experiments - if they don't look good, you can try something else
-- You can render up to 3 test shaders to explore the creative space
-- Once you've found interesting variations through experimentation, output them with shader_output
+SDF SHAPE EXAMPLES (polygon signed distance functions - great for geometric patterns!):
+  let d = sdHexagon(coord, 0.4);                              // Hexagon shape
+  let d = sdStar(coord, 0.5, 5, 2.5);                         // 5-pointed star
+  let d = smooth_min(sdHexagon(coord, 0.3), sdPentagram(coord - vec2f(0.3, 0.0), 0.2), 0.1);  // Blended shapes
+  let rings = fract(sdOctagon(coord, 0.5) * 10.0);            // Concentric octagon rings
+  let warped_hex = sdHexagon(domainWarp(coord * 3.0, 0.3), 0.3);  // Organic warped hexagon
+  let color = hsv_to_rgb(d * 3.0, 0.8, smoothstep(0.01, -0.01, d));  // Color from distance
 
-SELECTION CRITERIA FOR FINAL OUTPUT:
+EXPERIMENTATION (OPTIONAL):
+- You have access to a render_shader tool that lets you SEE what a shader looks like
+- If you're confident in your mutation, skip experimenting and go DIRECTLY to shader_output — this is faster and preferred
+- Only use render_shader if you're truly unsure about a creative choice and want to test it
+- You can render up to 3 test shaders, but 0 is fine if you're confident
+
+SELECTION CRITERIA:
 - Prefer visually interesting, complex, and dynamic patterns
 - Avoid repetitive, boring, or overly simple results
-- Choose variations that are aesthetically compelling and have visual depth
-- Select mutations that create novel visual effects while maintaining some connection to the parent
-- If an experiment looks bland or uninteresting, try a different approach
-- If your first (or any) experiment looks good, it's OK to use that to save time - you don't always have to try all available experiments
+- Aim for aesthetic depth and novel visual effects
 
 CRITICAL REQUIREMENTS:
 - Generate EXACTLY ${params.count} variations
@@ -350,6 +365,7 @@ CRITICAL REQUIREMENTS:
   - Write new functions and use them
   - Think about new math operations (abs, modf, ceil/floor, dot, cross, fract, min, max)
   - Think about symmetry vs. asymmetry: mirror, kaleidoscope, shapes (triangle/square/hex/circles)
+  - Use SDF shape functions (sdHexagon, sdStar, sdPentagram, sdEquilateralTriangle, sdOctagon, etc.) for geometric patterns, tiling, outlines, or blended organic forms
   - Think about abstract patterns, interesting variations and "out-of-the-box" ideas
   - Add functions for rotation and other creative coordinate transformations when you feel like it
   - Don't be afraid to add new functions and use them!
@@ -362,7 +378,10 @@ CRITICAL REQUIREMENTS:
 
 OUTPUT FORMAT:
 Use the shader_output tool to return your ${params.count} shader variations.
-The tool expects a JSON object with a "shaders" array, each containing a "shader" field with the complete WGSL code and optionally a "changelog" field noting significant changes, including how many constants/operators/functions/structural changes were made.`;
+The tool expects a JSON object with a "shaders" array, each containing:
+- "name" (required): A creative, concise title (2-4 words) that captures the visual essence (e.g., "Fractal Bloom", "Neon Hex Grid", "Warped Starfield")
+- "shader" (required): The complete WGSL code
+- "changelog" (optional): Brief notes on significant changes`;
 
   return { system, user };
 }
