@@ -26,6 +26,8 @@ import { prepareShader } from '@/core/engine/ShaderPreparation';
 import { ShaderEvolver } from '@/core/llm';
 import type { ShaderDefinition } from '@/types/core';
 import { getErrorMessage, calculateSupersampledDimensions } from '@/utils/helpers';
+import { ShaderExporter } from '@/utils/ShaderExporter';
+import { ShaderImporter } from '@/utils/ShaderImporter';
 
 // Import example shader sources
 import sineWaveSource from '../shaders/examples/sine-wave.wgsl?raw';
@@ -140,9 +142,11 @@ export const App: Component = () => {
             }
           },
           onChildCompleted: async (result, index, total) => {
-            // Handle each child as it completes (progressive display)
+            // Handle each child/mashup as it completes (progressive display)
             const activeEvolutions = Array.from(evolutionStore.activeEvolutions.entries());
+
             if (activeEvolutions.length > 0) {
+              // Evolution mode
               const [shaderId] = activeEvolutions[0];
 
               if (result.success && result.shader) {
@@ -158,6 +162,19 @@ export const App: Component = () => {
                 evolutionStore.updateProgress(shaderId, {
                   lastError: result.error,
                 });
+              }
+            } else if (mashupInProgress()) {
+              // Mashup mode
+              if (result.success && result.shader) {
+                addLog(`✓ Mashup ${index + 1}/${total} compiled successfully`);
+
+                // Add mashup result immediately
+                evolutionStore.addMashupResult(result.shader);
+
+                // Execute mashup shader to generate GPU texture for display
+                await executeShader(result.shader.id, result.shader);
+              } else {
+                addLog(`✗ Mashup ${index + 1}/${total} failed: ${result.error}`, 'error');
               }
             }
           }
@@ -839,6 +856,286 @@ export const App: Component = () => {
     }
   };
 
+  const handleExportShader = async (shaderId: string) => {
+    const shader = shaderStore.getShader(shaderId);
+    if (!shader) return;
+
+    addLog(`Exporting shader "${shader.name}"...`);
+
+    try {
+      // Get the current result image data URL
+      const result = resultStore.getResult(shaderId);
+      let imageDataUrl: string | undefined;
+
+      if (result?.gpuTexture) {
+        // Use GPU texture to create data URL
+        const dimensions = { width: 512, height: 512 };
+        const globalParams = shaderStore.getGlobalParameters(shaderId);
+        const device = context.getDevice();
+
+        // Render at 512x512 for preview
+        const prep = await prepareShader(
+          compiler,
+          bufferManager,
+          parameterManager,
+          pipelineBuilder,
+          executor,
+          context,
+          (id) => shaderStore.getIterationValue(id),
+          (id) => shaderStore.getParameterValues(id),
+          {
+            shader,
+            shaderId,
+            dimensions,
+            zoom: globalParams.zoom,
+            panX: globalParams.panX,
+            panY: globalParams.panY,
+            labelSuffix: 'export',
+            measureCompileTime: false,
+          }
+        );
+
+        const { outputTexture, dimensionsBuffer, paramBuffer, layout, pipeline, workgroups, iterations, hasIterations } = prep;
+
+        await withGPUErrorScope(device, 'export render', async () => {
+          if (hasIterations) {
+            await executeFeedbackLoop(
+              device,
+              dimensions,
+              iterations,
+              outputTexture,
+              'export',
+              async (ctx) => {
+                const bindGroup = pipelineBuilder.createStandardBindGroup(
+                  layout,
+                  outputTexture,
+                  dimensionsBuffer,
+                  paramBuffer,
+                  ctx.prevTexture,
+                  ctx.prevSampler
+                );
+                const executionContext = createExecutionContext(pipeline, bindGroup, workgroups, outputTexture);
+                await executor.execute(executionContext);
+              }
+            );
+          } else {
+            const bindGroup = pipelineBuilder.createStandardBindGroup(
+              layout,
+              outputTexture,
+              dimensionsBuffer,
+              paramBuffer
+            );
+            const executionContext = createExecutionContext(pipeline, bindGroup, workgroups, outputTexture);
+            await executor.execute(executionContext);
+          }
+        });
+
+        // Copy to buffer and convert to ImageData
+        const outputSize = dimensions.width * dimensions.height * 4 * 4;
+        const outputBuffer = bufferManager.createBuffer({
+          size: outputSize,
+          usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST | GPUBufferUsage.COPY_SRC,
+          label: 'export-buffer',
+        }, false);
+
+        const copyEncoder = device.createCommandEncoder({ label: 'export-copy' });
+        copyEncoder.copyTextureToBuffer(
+          { texture: outputTexture },
+          { buffer: outputBuffer, bytesPerRow: dimensions.width * 16, offset: 0 },
+          { width: dimensions.width, height: dimensions.height }
+        );
+        device.queue.submit([copyEncoder.finish()]);
+        await device.queue.onSubmittedWorkDone();
+
+        const processedBuffer = await withGPUErrorScope(device, 'export-post-processing', async () => {
+          return await postProcessor.applyGammaContrast(
+            outputBuffer,
+            dimensions,
+            globalParams.gamma,
+            globalParams.contrast
+          );
+        });
+
+        imageDataUrl = await resultRenderer.bufferToDataURL(processedBuffer, dimensions, 'image/png');
+      }
+
+      // Export the shader
+      await ShaderExporter.exportShader(shader, imageDataUrl);
+      addLog(`Exported "${shader.name}"`, 'success');
+    } catch (err) {
+      const errorMessage = getErrorMessage(err);
+      addLog(`Export failed: ${errorMessage}`, 'error');
+      console.error('Export error:', err);
+    }
+  };
+
+  const handleExportAllShaders = async () => {
+    const shaders = shaderStore.getActiveShaders();
+    if (shaders.length === 0) {
+      addLog('No shaders to export', 'error');
+      return;
+    }
+
+    addLog(`Exporting ${shaders.length} shaders...`);
+
+    try {
+      // Create map of shader IDs to image data URLs
+      const imageDataUrls = new Map<string, string>();
+
+      for (const shader of shaders) {
+        const result = resultStore.getResult(shader.id);
+        if (result?.gpuTexture) {
+          // Use GPU texture to create data URL (512x512 preview)
+          const dimensions = { width: 512, height: 512 };
+          const globalParams = shaderStore.getGlobalParameters(shader.id);
+          const device = context.getDevice();
+
+          const prep = await prepareShader(
+            compiler,
+            bufferManager,
+            parameterManager,
+            pipelineBuilder,
+            executor,
+            context,
+            (id) => shaderStore.getIterationValue(id),
+            (id) => shaderStore.getParameterValues(id),
+            {
+              shader,
+              shaderId: shader.id,
+              dimensions,
+              zoom: globalParams.zoom,
+              panX: globalParams.panX,
+              panY: globalParams.panY,
+              labelSuffix: 'export-all',
+              measureCompileTime: false,
+            }
+          );
+
+          const { outputTexture, dimensionsBuffer, paramBuffer, layout, pipeline, workgroups, iterations, hasIterations } = prep;
+
+          await withGPUErrorScope(device, 'export-all render', async () => {
+            if (hasIterations) {
+              await executeFeedbackLoop(
+                device,
+                dimensions,
+                iterations,
+                outputTexture,
+                'export-all',
+                async (ctx) => {
+                  const bindGroup = pipelineBuilder.createStandardBindGroup(
+                    layout,
+                    outputTexture,
+                    dimensionsBuffer,
+                    paramBuffer,
+                    ctx.prevTexture,
+                    ctx.prevSampler
+                  );
+                  const executionContext = createExecutionContext(pipeline, bindGroup, workgroups, outputTexture);
+                  await executor.execute(executionContext);
+                }
+              );
+            } else {
+              const bindGroup = pipelineBuilder.createStandardBindGroup(
+                layout,
+                outputTexture,
+                dimensionsBuffer,
+                paramBuffer
+              );
+              const executionContext = createExecutionContext(pipeline, bindGroup, workgroups, outputTexture);
+              await executor.execute(executionContext);
+            }
+          });
+
+          const outputSize = dimensions.width * dimensions.height * 4 * 4;
+          const outputBuffer = bufferManager.createBuffer({
+            size: outputSize,
+            usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST | GPUBufferUsage.COPY_SRC,
+            label: 'export-all-buffer',
+          }, false);
+
+          const copyEncoder = device.createCommandEncoder({ label: 'export-all-copy' });
+          copyEncoder.copyTextureToBuffer(
+            { texture: outputTexture },
+            { buffer: outputBuffer, bytesPerRow: dimensions.width * 16, offset: 0 },
+            { width: dimensions.width, height: dimensions.height }
+          );
+          device.queue.submit([copyEncoder.finish()]);
+          await device.queue.onSubmittedWorkDone();
+
+          const processedBuffer = await withGPUErrorScope(device, 'export-all-post-processing', async () => {
+            return await postProcessor.applyGammaContrast(
+              outputBuffer,
+              dimensions,
+              globalParams.gamma,
+              globalParams.contrast
+            );
+          });
+
+          const dataUrl = await resultRenderer.bufferToDataURL(processedBuffer, dimensions, 'image/png');
+          imageDataUrls.set(shader.id, dataUrl);
+        }
+      }
+
+      // Export all shaders
+      await ShaderExporter.exportAllShaders(shaders, imageDataUrls);
+      addLog(`Exported ${shaders.length} shaders`, 'success');
+    } catch (err) {
+      const errorMessage = getErrorMessage(err);
+      addLog(`Export all failed: ${errorMessage}`, 'error');
+      console.error('Export all error:', err);
+    }
+  };
+
+  const handleImportShaders = async () => {
+    // Create file input
+    const input = document.createElement('input');
+    input.type = 'file';
+    input.accept = '.zip';
+    input.onchange = async (e) => {
+      const target = e.target as HTMLInputElement;
+      const file = target.files?.[0];
+      if (!file) return;
+
+      addLog(`Importing from "${file.name}"...`);
+
+      try {
+        const result = await ShaderImporter.importFromZip(file);
+
+        if (result.errors.length > 0) {
+          for (const error of result.errors) {
+            addLog(error, 'error');
+          }
+        }
+
+        if (result.success) {
+          // Add imported shaders as promoted shaders
+          for (const shader of result.shaders) {
+            // Parse parameters from source if not already present
+            if (shader.parameters.length === 0) {
+              shader.parameters = parameterManager.parseParameters(shader.source);
+            }
+            if (!shader.iterations || shader.iterations === 1) {
+              shader.iterations = parameterManager.parseIterations(shader.source);
+            }
+
+            shaderStore.addPromotedShader(shader);
+            await executeShader(shader.id);
+          }
+
+          addLog(`Imported ${result.shaders.length} shader(s)`, 'success');
+        } else {
+          addLog('Import failed', 'error');
+        }
+      } catch (err) {
+        const errorMessage = getErrorMessage(err);
+        addLog(`Import failed: ${errorMessage}`, 'error');
+        console.error('Import error:', err);
+      }
+    };
+
+    input.click();
+  };
+
   const handleMashup = async () => {
     if (!shaderEvolver) {
       alert('Mashup feature requires VITE_ANTHROPIC_API_KEY environment variable');
@@ -860,33 +1157,14 @@ export const App: Component = () => {
     addLog(`Starting mashup of ${selectedShaders.length} shaders: ${parentNames.join(', ')} (model: ${currentModel}, temp: ${currentTemp.toFixed(2)}, variants: ${mashupCount})`);
 
     try {
-      // Generate mashup variations
-      const results = await shaderEvolver.evolveMashup(selectedShaders, mashupCount, currentTemp, currentModel);
-
-      addLog(`Received ${results.length} mashup variations, processing...`, 'success');
-
       // Clear previous mashup results
       evolutionStore.clearMashupResults();
 
-      // Process each mashup result
-      for (let i = 0; i < results.length; i++) {
-        const result = results[i];
+      // Generate mashup variations
+      // Mashups are processed progressively via onChildCompleted callback
+      const results = await shaderEvolver.evolveMashup(selectedShaders, mashupCount, currentTemp, currentModel);
 
-        if (result.success && result.shader) {
-          addLog(`✓ Mashup ${i + 1}/${mashupCount} compiled successfully`);
-
-          // Add to mashup results
-          evolutionStore.addMashupResult(result.shader);
-
-          // Execute mashup shader to generate ImageData
-          await executeShader(result.shader.id, result.shader);
-        } else {
-          addLog(`✗ Mashup ${i + 1}/${mashupCount} failed: ${result.error}`, 'error');
-          console.warn(`Failed to create mashup ${i + 1}:`, result.error);
-        }
-      }
-
-      // Update mashup results with parent names
+      // Update mashup results with parent names (all mashups have already been added/executed via callback)
       evolutionStore.setMashupResults(
         evolutionStore.getMashupResults(),
         parentNames
@@ -1043,6 +1321,8 @@ export const App: Component = () => {
           model={model()}
           onTemperatureChange={setTemperature}
           onModelChange={setModel}
+          onImportShaders={handleImportShaders}
+          onExportAllShaders={handleExportAllShaders}
         />
 
         <main class="app-main">
@@ -1059,6 +1339,7 @@ export const App: Component = () => {
             onMashupToggle={handleMashupToggle}
             onDeleteShader={handleDeleteShader}
             onDownloadShader={handleDownloadShader}
+            onExportShader={handleExportShader}
             onRenderPreview={renderShaderPreview}
             onShaderEdit={handleShaderEdit}
             onShaderCompile={handleShaderCompile}

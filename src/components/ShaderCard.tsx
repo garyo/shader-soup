@@ -29,6 +29,7 @@ interface ShaderCardProps {
   onMashupToggle: (shaderId: string) => void;
   onDeleteShader: () => void;
   onDownloadShader: () => void;
+  onExportShader: () => void;
   onRenderPreview: (shader: ShaderDefinition, size: number) => Promise<ImageData | null>;
   onShaderEdit: (shaderId: string, newSource: string) => Promise<{ success: boolean; error?: string }>;
   onShaderCompile: (source: string) => Promise<{ success: boolean; errors?: Array<{ message: string; line?: number; column?: number }> }>;
@@ -128,6 +129,16 @@ export const ShaderCard: Component<ShaderCardProps> = (props) => {
             <svg width="16" height="16" viewBox="0 0 16 16" fill="#ddd">
               <path d="M8.5 1a.5.5 0 0 0-1 0v8.793L4.854 7.146a.5.5 0 1 0-.708.708l3.5 3.5a.5.5 0 0 0 .708 0l3.5-3.5a.5.5 0 0 0-.708-.708L8.5 9.793V1z"/>
               <path d="M2 13.5a.5.5 0 0 0 .5.5h11a.5.5 0 0 0 0-1h-11a.5.5 0 0 0-.5.5z"/>
+            </svg>
+          </button>
+          <button
+            class="export-shader-button"
+            onClick={props.onExportShader}
+            title="Export shader as ZIP (code + preview)"
+          >
+            <svg width="16" height="16" viewBox="0 0 16 16" fill="#4a9eff">
+              <path d="M6.5 7.5a1 1 0 0 0-1-1h-1a1 1 0 0 0-1 1v.938l.4 1.599a1 1 0 0 0 .416.62l1.184.79V13.5a.5.5 0 0 0 .5.5h1a.5.5 0 0 0 .5-.5v-2.053l1.184-.79a1 1 0 0 0 .416-.62l.4-1.599V7.5a1 1 0 0 0-1-1h-1a1 1 0 0 0-1 1z"/>
+              <path d="M4 0a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h8a2 2 0 0 0 2-2V2a2 2 0 0 0-2-2H4zm0 1h8a1 1 0 0 1 1 1v12a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V2a1 1 0 0 1 1-1z"/>
             </svg>
           </button>
           <button

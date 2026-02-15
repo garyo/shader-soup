@@ -44,13 +44,19 @@ fn main(
   // Calculate 1D index from 2D coordinates
   // Assuming width = num_workgroups.x * 8
   let width = num_workgroups.x * 8u;
-  let index = id.y * width + id.x;
+  let height = num_workgroups.y * 8u;
+
+  // Flip Y coordinate to match canvas 2D context orientation
+  // (canvas has Y=0 at top, but we want to match WebGPU rendering which flips Y)
+  let flipped_y = height - 1u - id.y;
+  let read_index = id.y * width + id.x;
+  let write_index = flipped_y * width + id.x;
 
   // Bounds check
-  if (index >= arrayLength(&input)) {
+  if (read_index >= arrayLength(&input)) {
     return;
   }
 
-  // Convert and pack
-  output[index] = pack_rgba8(input[index]);
+  // Convert and pack with Y-flip
+  output[write_index] = pack_rgba8(input[read_index]);
 }

@@ -99,8 +99,10 @@ The application provides a shader execution framework that:
 ### Coordinate System
 
 - **X axis**: -1.0 (left) to 1.0 (right)
-- **Y axis**: Scaled to maintain aspect ratio, centered at 0.0
+- **Y axis**: -1.0 (bottom) to 1.0 (top), scaled to maintain aspect ratio, centered at 0.0
 - **Origin**: Center of the image (0, 0)
+
+**Note**: All rendered outputs (canvas display, preview popups, and downloaded images) use consistent Y-axis orientation with Y+ pointing upward (mathematical convention).
 
 ### Writing Shaders with Parameters
 

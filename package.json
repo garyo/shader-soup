@@ -25,6 +25,7 @@
     "@codemirror/view": "^6.38.7",
     "astro": "^5.15.8",
     "codemirror": "^6.0.2",
+    "jszip": "^3.10.1",
     "solid-js": "^1.9.10"
   },
   "devDependencies": {

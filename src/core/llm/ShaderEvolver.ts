@@ -624,7 +624,9 @@ export class ShaderEvolver {
         model: model,
         max_tokens: 16384,
         temperature: config.temperature,
-        tools: [renderShaderTool, shaderObjectTool],
+        tools: [renderShaderTool,
+          shaderObjectTool,
+          {"type": "web_search_20250305", "name": "web_search", "max_uses": 1}],
         system: [
           {
             type: "text",
@@ -771,17 +773,29 @@ export class ShaderEvolver {
             parentInfo: `Mashup of: ${parentNames}`,
           });
 
-          results.push({
+          const result: EvolutionResult = {
             success: true,
             shader: mashupShaderDef,
-          });
+          };
+          results.push(result);
 
           console.log(`Mashup ${i + 1} generated successfully. Memory now has ${this.memory.getEntryCount()} entries.`);
+
+          // Call onChildCompleted callback for progressive display (works for mashups too)
+          if (this.onChildCompleted) {
+            await this.onChildCompleted(result, i, count);
+          }
         } catch (error) {
-          results.push({
+          const result: EvolutionResult = {
             success: false,
             error: error instanceof Error ? error.message : 'Unknown error during mashup',
-          });
+          };
+          results.push(result);
+
+          // Call callback even for failures
+          if (this.onChildCompleted) {
+            await this.onChildCompleted(result, i, count);
+          }
         }
       }
 

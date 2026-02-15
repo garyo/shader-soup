@@ -20,6 +20,7 @@ interface ShaderGridProps {
   onMashupToggle: (shaderId: string) => void;
   onDeleteShader: (shaderId: string) => void;
   onDownloadShader: (shaderId: string) => void;
+  onExportShader: (shaderId: string) => void;
   onRenderPreview: (shader: ShaderDefinition, size: number) => Promise<ImageData | null>;
   onShaderEdit: (shaderId: string, newSource: string) => Promise<{ success: boolean; error?: string }>;
   onShaderCompile: (source: string) => Promise<{ success: boolean; errors?: Array<{ message: string; line?: number; column?: number }> }>;
@@ -48,6 +49,7 @@ export const ShaderGrid: Component<ShaderGridProps> = (props) => {
             onMashupToggle={props.onMashupToggle}
             onDeleteShader={() => props.onDeleteShader(shader.id)}
             onDownloadShader={() => props.onDownloadShader(shader.id)}
+            onExportShader={() => props.onExportShader(shader.id)}
             onRenderPreview={props.onRenderPreview}
             onShaderEdit={props.onShaderEdit}
             onShaderCompile={props.onShaderCompile}

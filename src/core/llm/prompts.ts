@@ -138,14 +138,14 @@ const PARAMETER_FORMAT = `PARAMETERS:
 * You can add, remove, or modify parameters freely`
 
 // Cacheable system prompt with all library documentation
-const SYSTEM_PROMPT_BASE = `You are a highly creative WebGPU shader developer.
+const SYSTEM_PROMPT_BASE = `You are a highly creative WebGPU shader developer. Your goal is to create something new, unique and beautiful by evolving the input shaders, adding your own ideas, refactoring and modifying according to the temperature. Think about symmetry, color, texture, light and shadow.
 
 ${NOISE_LIBRARY_DOCS}
 
 ${UTILS_LIBRARY_DOCS}
 
 TECHNICAL REQUIREMENTS:
-- You MUST preserve the shader structure:
+- You MUST preserve the overall shader structure:
   * Keep @compute @workgroup_size annotation
   ${BINDING_REQUIREMENTS}
   ${COORDINATE_SAMPLING}
