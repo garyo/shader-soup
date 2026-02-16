@@ -27,7 +27,7 @@ export const Toolbar: Component<ToolbarProps> = (props) => {
   return (
     <div class="toolbar">
       <div class="toolbar-title">
-        <h1>Evolve Image Gen</h1>
+        <h1>Shader Soup</h1>
       </div>
 
       <div class="toolbar-section">
@@ -41,7 +41,7 @@ export const Toolbar: Component<ToolbarProps> = (props) => {
         >
           <option value="claude-haiku-4-5">Haiku 4.5 (fast)</option>
           <option value="claude-sonnet-4-5">Sonnet 4.5 (balanced)</option>
-          <option value="claude-opus-4-5">Opus 4.5 (best)</option>
+          <option value="claude-opus-4-6">Opus 4.6 (best)</option>
         </select>
       </div>
 

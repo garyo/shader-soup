@@ -272,7 +272,7 @@ bun run preview
 
 ### What You'll See
 
-1. **Header**: "Evolve Image Gen" with gradient text
+1. **Header**: "Shader Soup" with gradient text
 2. **Grid of 4 Shaders**: Each showing real-time output
 3. **Parameter Sliders**: Adjust and see instant changes
 4. **Execution Times**: Performance metrics on each card

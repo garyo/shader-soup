@@ -1,4 +1,4 @@
-# Contributing to Evolve Image Gen
+# Contributing to Shader Soup
 
 ## Development Setup
 

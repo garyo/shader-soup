@@ -61,7 +61,7 @@ export const App: Component = () => {
   const [webgpuReady, setWebgpuReady] = createSignal(false);
   const [error, setError] = createSignal<string | null>(null);
   const [temperature, setTemperature] = createSignal(0.9); // Default evolution temperature
-  const [model, setModel] = createSignal('claude-haiku-4-5'); // Default model
+  const [model, setModel] = createSignal('claude-sonnet-4-5'); // Default model
   const [logs, setLogs] = createSignal<LogEntry[]>([]);
   const [logOverlayOpen, setLogOverlayOpen] = createSignal(false);
   const [mashupInProgress, setMashupInProgress] = createSignal(false);

@@ -1,5 +1,5 @@
 {
-  "name": "evolve-image-gen",
+  "name": "shader-soup",
   "version": "0.1.0",
   "description": "WebGPU-based shader evolution platform for generative image processing",
   "type": "module",

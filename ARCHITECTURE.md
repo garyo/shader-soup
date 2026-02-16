@@ -2,7 +2,7 @@
 
 ## System Overview
 
-Evolve Image Gen is built as a modular, type-safe web application leveraging WebGPU for GPU-accelerated compute shader execution. The architecture separates concerns into distinct layers: core GPU operations, state management, UI components, and utilities.
+Shader Soup is built as a modular, type-safe web application leveraging WebGPU for GPU-accelerated compute shader execution. The architecture separates concerns into distinct layers: core GPU operations, state management, UI components, and utilities.
 
 ```
 ┌─────────────────────────────────────────────────────────────┐

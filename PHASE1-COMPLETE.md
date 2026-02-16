@@ -2,7 +2,7 @@
 
 ## Summary
 
-Phase 1 of the Evolve Image Gen project has been successfully completed. The core WebGPU engine is fully implemented with comprehensive type safety, error handling, and testing.
+Phase 1 of the Shader Soup project has been successfully completed. The core WebGPU engine is fully implemented with comprehensive type safety, error handling, and testing.
 
 ## Components Implemented
 

@@ -1,10 +1,10 @@
-# Evolve Image Gen
+# Shader Soup
 
 A WebGPU-based shader evolution platform for generative image processing and creation.
 
 ## Overview
 
-Evolve Image Gen is a web application that enables the execution and visualization of WebGPU compute shaders for image generation and processing. The application provides a framework for running arbitrary compute shaders with inputs of optional 2D images and normalized XY coordinates, displaying results from multiple shaders simultaneously.
+Shader Soup is a web application that enables the execution and visualization of WebGPU compute shaders for image generation and processing. The application provides a framework for running arbitrary compute shaders with inputs of optional 2D images and normalized XY coordinates, displaying results from multiple shaders simultaneously.
 
 ### Current Features
 
@@ -40,7 +40,7 @@ Evolve Image Gen is a web application that enables the execution and visualizati
 ```bash
 # Clone the repository
 git clone <repository-url>
-cd evolve-image-gen
+cd shader-soup
 
 # Install dependencies
 bun install
@@ -71,7 +71,7 @@ bun run preview
 ## Project Structure
 
 ```
-evolve-image-gen/
+shader-soup/
 ├── src/
 │   ├── components/         # SolidJS UI components
 │   ├── core/              # Core WebGPU and shader engine

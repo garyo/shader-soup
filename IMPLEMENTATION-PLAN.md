@@ -2,7 +2,7 @@
 
 ## Overview
 
-This document outlines the phased implementation approach for Evolve Image Gen. The plan is structured to deliver incremental, testable functionality while maintaining high code quality throughout.
+This document outlines the phased implementation approach for Shader Soup. The plan is structured to deliver incremental, testable functionality while maintaining high code quality throughout.
 
 ## Phase 0: Project Setup (Week 1)
 

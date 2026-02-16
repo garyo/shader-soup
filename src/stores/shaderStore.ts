@@ -5,7 +5,7 @@
 import { createStore } from 'solid-js/store';
 import type { ShaderDefinition, ShaderParameter } from '@/types/core';
 
-const STORAGE_KEY = 'evolve-image-gen-promoted-shaders';
+const STORAGE_KEY = 'shader-soup-promoted-shaders';
 
 interface StoredShader {
   shader: ShaderDefinition;
