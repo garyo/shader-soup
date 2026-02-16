@@ -343,9 +343,16 @@ export const shaderStore = {
    * Get all active shaders
    */
   getActiveShaders(): ShaderDefinition[] {
-    return Array.from(state.shaders.values()).filter((shader) =>
+    const active = Array.from(state.shaders.values()).filter((shader) =>
       state.activeShaders.has(shader.id)
     );
+
+    // Examples (non-promoted) first in original order, then generated (promoted) by creation time
+    const examples = active.filter(s => !state.promotedShaderIds.has(s.id));
+    const generated = active.filter(s => state.promotedShaderIds.has(s.id));
+    generated.sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime());
+
+    return [...examples, ...generated];
   },
 
   /**
