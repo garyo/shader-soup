@@ -129,8 +129,8 @@ export async function prepareShader(
 
   const compileTime = measureCompileTime ? performance.now() - startCompile : undefined;
 
-  // Create dimensions buffer with zoom and pan
-  // Struct layout: { width: u32, height: u32, zoom: f32, _pad1: u32, panX: f32, panY: f32, _pad2: u32, _pad3: u32 }
+  // Create dimensions buffer with zoom, pan, and animation fields
+  // Struct layout: { width: u32, height: u32, zoom: f32, _pad1: u32, panX: f32, panY: f32, time: f32, frame: u32 }
   const dimensionsData = new ArrayBuffer(32); // 8 × 4 bytes
   const u32View = new Uint32Array(dimensionsData);
   const f32View = new Float32Array(dimensionsData);
@@ -141,8 +141,8 @@ export async function prepareShader(
   u32View[3] = 0;                   // _pad1: u32
   f32View[4] = panX;                // panX: f32
   f32View[5] = panY;                // panY: f32
-  u32View[6] = 0;                   // _pad2: u32
-  u32View[7] = 0;                   // _pad3: u32
+  f32View[6] = 0.0;                 // time: f32 (seconds since animation start)
+  u32View[7] = 0;                   // frame: u32 (frame counter)
 
   const dimensionsBuffer = bufferManager.createBufferWithData(
     dimensionsData,

@@ -9,8 +9,8 @@ struct Dimensions {
   _pad1: u32,
   panX: f32,
   panY: f32,
-  _pad2: u32,
-  _pad3: u32,
+  time: f32,
+  frame: u32,
 }
 
 struct Params {

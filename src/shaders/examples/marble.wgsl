@@ -8,8 +8,8 @@ struct Dimensions {
   _pad1: u32,
   panX: f32,
   panY: f32,
-  _pad2: u32,
-  _pad3: u32,
+  time: f32,
+  frame: u32,
 }
 
 struct Params {
@@ -42,7 +42,7 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
   );
 
   // Scale coordinates
-  var p = coord * params.scale;
+  var p = coord * params.scale + vec2f(dimensions.time * 0.15, 0.0);
 
   // Apply domain warping
   if (params.warpAmount > 0.0) {

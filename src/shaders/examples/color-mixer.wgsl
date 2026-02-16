@@ -9,8 +9,8 @@ struct Dimensions {
   _pad1: u32,
   panX: f32,
   panY: f32,
-  _pad2: u32,
-  _pad3: u32,
+  time: f32,
+  frame: u32,
 }
 
 struct Params {
@@ -58,7 +58,7 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
   }
   // Mix mode 2: Angular gradient
   else if (params.mixMode < 2.5) {
-    let angle = atan2(coord.y, coord.x);
+    let angle = atan2(coord.y, coord.x) + dimensions.time * 0.3;
     r = (sin(angle) * 0.5 + 0.5) * params.redIntensity;
     g = (cos(angle) * 0.5 + 0.5) * params.greenIntensity;
     b = (sin(angle * 2.0) * 0.5 + 0.5) * params.blueIntensity;

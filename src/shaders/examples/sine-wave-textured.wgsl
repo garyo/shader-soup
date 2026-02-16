@@ -8,8 +8,8 @@ struct Dimensions {
   _pad1: u32,
   panX: f32,
   panY: f32,
-  _pad2: u32,
-  _pad3: u32,
+  time: f32,
+  frame: u32,
 }
 
 struct Params {
@@ -71,7 +71,7 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
   let w4 = 1.0 / (abs(dOct)     + 0.02);
   let w5 = 1.0 / (abs(dHexSmall) + 0.02);
   let totalW = w0 + w1 + w2 + w3 + w4 + w5;
-  let hue = (w0 * 0.5 + w1 * 1.0 + w2 * 2.0 + w3 * 3.2 + w4 * 4.5 + w5 * 5.5) / totalW + params.colorShift;
+  let hue = (w0 * 0.5 + w1 * 1.0 + w2 * 2.0 + w3 * 3.2 + w4 * 4.5 + w5 * 5.5) / totalW + params.colorShift + dimensions.time * 0.4;
 
   // Inside: saturated color. Outside: dark with glow. Edges highlighted.
   let inside = smoothstep(0.01, -0.01, d);

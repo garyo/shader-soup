@@ -24,6 +24,8 @@ interface ShaderGridProps {
   onRenderPreview: (shader: ShaderDefinition, size: number) => Promise<ImageData | null>;
   onShaderEdit: (shaderId: string, newSource: string) => Promise<{ success: boolean; error?: string }>;
   onShaderCompile: (source: string) => Promise<{ success: boolean; errors?: Array<{ message: string; line?: number; column?: number }> }>;
+  onAnimationStart: (shaderId: string) => void;
+  onAnimationStop: (shaderId: string) => void;
 }
 
 export const ShaderGrid: Component<ShaderGridProps> = (props) => {
@@ -53,6 +55,8 @@ export const ShaderGrid: Component<ShaderGridProps> = (props) => {
             onRenderPreview={props.onRenderPreview}
             onShaderEdit={props.onShaderEdit}
             onShaderCompile={props.onShaderCompile}
+            onAnimationStart={props.onAnimationStart}
+            onAnimationStop={props.onAnimationStop}
           />
         )}
       </For>

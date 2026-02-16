@@ -33,6 +33,8 @@ interface ShaderCardProps {
   onRenderPreview: (shader: ShaderDefinition, size: number) => Promise<ImageData | null>;
   onShaderEdit: (shaderId: string, newSource: string) => Promise<{ success: boolean; error?: string }>;
   onShaderCompile: (source: string) => Promise<{ success: boolean; errors?: Array<{ message: string; line?: number; column?: number }> }>;
+  onAnimationStart: (shaderId: string) => void;
+  onAnimationStop: (shaderId: string) => void;
 }
 
 export const ShaderCard: Component<ShaderCardProps> = (props) => {
@@ -155,7 +157,11 @@ export const ShaderCard: Component<ShaderCardProps> = (props) => {
         </div>
       </div>
 
-      <div class="shader-canvas-container">
+      <div
+        class="shader-canvas-container"
+        onMouseEnter={() => props.onAnimationStart(props.shader.id)}
+        onMouseLeave={() => props.onAnimationStop(props.shader.id)}
+      >
         <Show
           when={!props.error}
           fallback={
@@ -274,6 +280,8 @@ export const ShaderCard: Component<ShaderCardProps> = (props) => {
           children={children()}
           onPromote={props.onPromoteChild}
           onRenderPreview={props.onRenderPreview}
+          onAnimationStart={props.onAnimationStart}
+          onAnimationStop={props.onAnimationStop}
         />
       </Show>
 

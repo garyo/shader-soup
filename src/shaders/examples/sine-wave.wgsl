@@ -8,8 +8,8 @@ struct Dimensions {
   _pad1: u32,
   panX: f32,
   panY: f32,
-  _pad2: u32,
-  _pad3: u32,
+  time: f32,
+  frame: u32,
 }
 
 struct Params {
@@ -39,7 +39,7 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
   );
 
   // Create wave pattern
-  let wave = sin(coord.x * params.frequency + params.phase) * params.amplitude;
+  let wave = sin(coord.x * params.frequency + params.phase + dimensions.time * 2.0) * params.amplitude;
 
   // Map wave to 0-1 range
   let brightness = (wave + params.amplitude) / (2.0 * params.amplitude);

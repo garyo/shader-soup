@@ -23,6 +23,7 @@ import { PostProcessor } from '@/core/output/PostProcessor';
 import { withGPUErrorScope } from '@/core/engine/GPUErrorHandler';
 import { executeFeedbackLoop } from '@/core/engine/FeedbackLoop';
 import { prepareShader } from '@/core/engine/ShaderPreparation';
+import { AnimationController } from '@/core/engine/AnimationController';
 import { ShaderEvolver } from '@/core/llm';
 import type { ShaderDefinition } from '@/types/core';
 import { getErrorMessage, calculateSupersampledDimensions } from '@/utils/helpers';
@@ -88,6 +89,7 @@ export const App: Component = () => {
   let postProcessor: PostProcessor;
   let gpuPostProcessor: GPUPostProcessor;
   let shaderEvolver: ShaderEvolver;
+  let animationController: AnimationController;
 
   // GPU-only mode flag (set to true to eliminate CPU readback)
   const USE_GPU_ONLY_PATH = true;
@@ -108,6 +110,26 @@ export const App: Component = () => {
       resultRenderer = new ResultRenderer(bufferManager, context);
       postProcessor = new PostProcessor(context, bufferManager);
       gpuPostProcessor = new GPUPostProcessor(context, compiler, bufferManager);
+
+      // Animation controller for mouse-over animation
+      animationController = new AnimationController(
+        context,
+        pipelineBuilder,
+        executor,
+        gpuPostProcessor,
+        (shaderId, gpuTexture) => {
+          // Update result store with new frame's GPU texture
+          const existingResult = resultStore.getResult(shaderId);
+          resultStore.updateResult({
+            shaderId,
+            imageData: existingResult?.imageData,
+            executionTime: existingResult?.executionTime ?? 0,
+            timestamp: new Date(),
+            gpuTexture,
+          });
+        },
+      );
+
       // CanvasRenderer created on-demand in ShaderEvolver for GPU-only thumbnail rendering
 
       // Initialize LLM-based shader evolver
@@ -522,6 +544,67 @@ export const App: Component = () => {
     shaderStore.resetGlobalParameters(shaderId);
     // Re-execute shader with reset parameters
     executeShader(shaderId);
+  };
+
+  const handleAnimationStart = async (shaderId: string) => {
+    if (animationController.isAnimating(shaderId)) return;
+
+    // Find shader in main store, evolution children, or mashup results
+    let shader = shaderStore.getShader(shaderId);
+    if (!shader) {
+      // Search evolution children across all parents
+      for (const children of evolutionStore.children.values()) {
+        const found = children.find(c => c.id === shaderId);
+        if (found) { shader = found; break; }
+      }
+    }
+    if (!shader) {
+      shader = evolutionStore.getMashupResults().find(m => m.id === shaderId);
+    }
+    if (!shader) return;
+
+    try {
+      const dimensions = inputStore.outputDimensions;
+      const supersampleFactor = 3;
+      const superDimensions = calculateSupersampledDimensions(dimensions, supersampleFactor);
+      const globalParams = shaderStore.getGlobalParameters(shaderId);
+
+      // Prepare shader (compile + create resources) — cached by pipeline builder
+      const prep = await prepareShader(
+        compiler,
+        bufferManager,
+        parameterManager,
+        pipelineBuilder,
+        executor,
+        context,
+        (id) => shaderStore.getIterationValue(id),
+        (id) => shaderStore.getParameterValues(id),
+        {
+          shader,
+          shaderId,
+          dimensions: superDimensions,
+          zoom: globalParams.zoom,
+          panX: globalParams.panX,
+          panY: globalParams.panY,
+          labelSuffix: 'anim',
+          measureCompileTime: false,
+        }
+      );
+
+      animationController.startAnimation(
+        shaderId,
+        prep,
+        superDimensions,
+        dimensions,
+        { gamma: globalParams.gamma, contrast: globalParams.contrast },
+      );
+    } catch (err) {
+      console.error(`Failed to start animation for ${shaderId}:`, err);
+    }
+  };
+
+  const handleAnimationStop = (shaderId: string) => {
+    animationController.stopAnimation(shaderId);
   };
 
   const handleEvolve = async (shaderId: string) => {
@@ -1343,6 +1426,8 @@ export const App: Component = () => {
             onRenderPreview={renderShaderPreview}
             onShaderEdit={handleShaderEdit}
             onShaderCompile={handleShaderCompile}
+            onAnimationStart={handleAnimationStart}
+            onAnimationStop={handleAnimationStop}
           />
 
           <Show when={evolutionStore.getMashupResults().length > 0}>
@@ -1352,6 +1437,8 @@ export const App: Component = () => {
               onPromote={handlePromoteChild}
               onClear={handleClearMashupResults}
               onRenderPreview={renderShaderPreview}
+              onAnimationStart={handleAnimationStart}
+              onAnimationStop={handleAnimationStop}
             />
           </Show>
 

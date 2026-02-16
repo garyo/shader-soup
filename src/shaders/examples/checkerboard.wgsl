@@ -9,8 +9,8 @@ struct Dimensions {
   _pad1: u32,
   panX: f32,
   panY: f32,
-  _pad2: u32,
-  _pad3: u32,
+  time: f32,
+  frame: u32,
 }
 
 struct Params {
@@ -40,8 +40,9 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
   );
 
   // Apply rotation
-  let cosRot = cos(params.rotation);
-  let sinRot = sin(params.rotation);
+  let angle = params.rotation + dimensions.time * 0.5;
+  let cosRot = cos(angle);
+  let sinRot = sin(angle);
   let rotated = vec2<f32>(
     coord.x * cosRot - coord.y * sinRot,
     coord.x * sinRot + coord.y * cosRot

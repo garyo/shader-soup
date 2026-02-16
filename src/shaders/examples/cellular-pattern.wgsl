@@ -9,8 +9,8 @@ struct Dimensions {
   _pad1: u32,
   panX: f32,
   panY: f32,
-  _pad2: u32,
-  _pad3: u32,
+  time: f32,
+  frame: u32,
 }
 
 struct Params {
@@ -57,7 +57,7 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
   // Add color variation based on cell position
   let cellId = floor(p);
   let cellHash = hash21(cellId);
-  let hue = (cellHash + params.hueShift) % 6.28;
+  let hue = (cellHash + params.hueShift + dimensions.time * 0.3) % 6.28;
 
   // Mix between edge color and fill color
   let edgeColor = vec3<f32>(0.0, 0.0, 0.0);

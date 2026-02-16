@@ -124,7 +124,7 @@ const COORDINATE_SAMPLING = ` * Get normalized UV coordinates using the get_uv()
       vec2<f32>(dimensions.panX, dimensions.panY),
       dimensions.zoom
     );
-  * The Dimensions struct includes zoom and pan:
+  * The Dimensions struct includes zoom, pan, and animation fields:
     struct Dimensions {
       width: u32,
       height: u32,
@@ -132,9 +132,13 @@ const COORDINATE_SAMPLING = ` * Get normalized UV coordinates using the get_uv()
       _pad1: u32,
       panX: f32,
       panY: f32,
-      _pad2: u32,
-      _pad3: u32,
-    }`
+      time: f32,      // elapsed seconds since animation start (use for animation!)
+      frame: u32,     // frame counter
+    }
+  * Animation: Use dimensions.time for continuous animation effects:
+    let wave = sin(coord.x * 5.0 + dimensions.time * 2.0);  // Scrolling wave
+    let pulse = 0.5 + 0.5 * sin(dimensions.time * 3.0);      // Pulsing value
+    let spiral = atan2(coord.y, coord.x) + dimensions.time;   // Rotating spiral`
 
 const PARAMETER_FORMAT = `PARAMETERS:
 * To add parameters, define a Params struct and bind it at @binding(2):
@@ -330,6 +334,12 @@ NOISE LIBRARY EXAMPLES:
   let warped = domainWarp(coord * 4.0, 0.5);  // Organic distortion
   let cells = cellularNoise(coord * 8.0);     // Cell-like patterns
 
+ANIMATION EXAMPLES (use dimensions.time for moving/animated effects!):
+  let wave = sin(coord.x * 5.0 + dimensions.time * 2.0);  // Scrolling wave
+  let pulse = 0.5 + 0.5 * sin(dimensions.time * 3.0);      // Pulsing value
+  let spiral = atan2(coord.y, coord.x) + dimensions.time;   // Rotating spiral
+  let flow = fbmPerlin(coord * 3.0 + vec2f(dimensions.time * 0.5, 0.0));  // Flowing noise
+
 SDF SHAPE EXAMPLES (polygon signed distance functions - great for geometric patterns!):
   let d = sdHexagon(coord, 0.4);                              // Hexagon shape
   let d = sdStar(coord, 0.5, 5, 2.5);                         // 5-pointed star
@@ -372,6 +382,7 @@ CRITICAL REQUIREMENTS:
   - It's OK to add code and change things without knowing what it'll look like. Just be creative.
   - Add params for interesting constants
   - After evolving, you may delete any params that don't do anything interesting.
+  - Try using dimensions.time to add animation! Shaders animate on mouse-over. Add scrolling, pulsing, rotating, or flowing effects.
 - With a temp of 0.1, change 1 or 2 of each of those. With a temp of 0.5, change around 5 of each of those. With a temp of 1.0, change most of them so the result is VERY different from the original.
 - With a temp > 0.8, be super creative and invent brand new looks, not just basic variations of the source.
 - BE CREATIVE!
@@ -491,7 +502,18 @@ TECHNICAL REQUIREMENTS:
   * @binding(3-4): input texture/sampler (optional, for feedback/image processing)
 - Get coordinates using the get_uv() helper function (automatically provided):
   let coord = get_uv(id.xy, dimensions.width, dimensions.height, vec2<f32>(dimensions.panX, dimensions.panY), dimensions.zoom);
-- The Dimensions struct must include zoom and pan fields (see example below)
+- The Dimensions struct MUST be declared exactly as:
+  struct Dimensions {
+    width: u32,
+    height: u32,
+    zoom: f32,
+    _pad1: u32,
+    panX: f32,
+    panY: f32,
+    time: f32,
+    frame: u32,
+  }
+  The time (f32, seconds) and frame (u32) fields enable animation. If the shader uses dimensions.time, keep it!
 - If the shader has parameters, they should be in a Params struct with inline comments: // min=X, max=Y, default=Z, step=W
 - Maintain @compute annotation`;
 

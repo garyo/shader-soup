@@ -9,8 +9,8 @@ struct Dimensions {
   _pad1: u32,
   panX: f32,
   panY: f32,
-  _pad2: u32,
-  _pad3: u32,
+  time: f32,
+  frame: u32,
 }
 
 struct Params {
@@ -48,7 +48,7 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
   let gradientValue = smoothstep(params.innerRadius, params.outerRadius, dist);
 
   // Create color based on distance and hue shift
-  let hue = (dist + params.hueShift) % 6.28;
+  let hue = (dist + params.hueShift + dimensions.time * 0.5) % 6.28;
   let saturation = 1.0 - gradientValue;
   let value = 1.0;
 

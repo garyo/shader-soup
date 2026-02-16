@@ -1,9 +1,13 @@
 /**
  * Hover Preview - Shows a larger 512x512 render when hovering over thumbnails
+ * Supports animation: starts animating on mount, stops on close.
  */
 
 import { type Component, Show, createSignal, createEffect, onMount, onCleanup } from 'solid-js';
 import type { ShaderDefinition } from '@/types/core';
+import { resultStore } from '@/stores';
+import { getWebGPUContext } from '@/core/engine/WebGPUContext';
+import { CanvasRenderer } from '@/core/engine/CanvasRenderer';
 
 interface HoverPreviewProps {
   shader: ShaderDefinition;
@@ -11,41 +15,66 @@ interface HoverPreviewProps {
   mouseY: number;
   onRender: (shader: ShaderDefinition, size: number) => Promise<ImageData | null>;
   onClose: () => void;
+  onAnimationStart?: (shaderId: string) => void;
+  onAnimationStop?: (shaderId: string) => void;
 }
 
 export const HoverPreview: Component<HoverPreviewProps> = (props) => {
-  const [imageData, setImageData] = createSignal<ImageData | null>(null);
   const [isRendering, setIsRendering] = createSignal(true);
+  const [hasContent, setHasContent] = createSignal(false);
   let canvasRef: HTMLCanvasElement | undefined;
   let containerRef: HTMLDivElement | undefined;
+  let rendererState: { current: CanvasRenderer | null } = { current: null };
 
-  // Re-render whenever the shader changes
+  // Start animation on mount
   createEffect(async () => {
     const shader = props.shader; // Track this dependency
-
-    // Reset state
     setIsRendering(true);
-    setImageData(null);
+    setHasContent(false);
 
-    // Render the 512x512 version
-    const rendered = await props.onRender(shader, 512);
-    setImageData(rendered);
+    // Start animation immediately — first frame will appear via resultStore
+    // We avoid doing a 2D canvas render here because getContext('2d') would
+    // lock the canvas and prevent WebGPU from using it for animation frames.
+    activeAnimationId = shader.id;
+    if (props.onAnimationStart) {
+      props.onAnimationStart(shader.id);
+    } else {
+      // No animation support — fall back to static render
+      const rendered = await props.onRender(shader, 512);
+      if (rendered && canvasRef) {
+        const ctx = canvasRef.getContext('2d');
+        if (ctx) {
+          ctx.putImageData(rendered, 0, 0);
+          setHasContent(true);
+        }
+      }
+    }
     setIsRendering(false);
   });
 
-  // Draw to canvas whenever imageData changes
-  createEffect(() => {
-    const data = imageData();
-    if (canvasRef && data) {
-      const ctx = canvasRef.getContext('2d');
-      if (ctx) {
-        ctx.putImageData(data, 0, 0);
+  // Watch resultStore for animation frame updates — render GPU textures to canvas
+  createEffect(async () => {
+    const result = resultStore.getResult(props.shader.id);
+    if (!result?.gpuTexture || !canvasRef) return;
+
+    try {
+      if (!rendererState.current) {
+        const context = await getWebGPUContext();
+        rendererState.current = new CanvasRenderer(context);
+        rendererState.current.configureCanvas(canvasRef);
       }
+
+      await rendererState.current.renderToCanvas(result.gpuTexture);
+      setHasContent(true);
+    } catch (err) {
+      // Silently fall back to static render
     }
   });
 
+  // Capture shader ID eagerly so cleanup can reference it after props are gone
+  let activeAnimationId: string | null = null;
+
   onMount(() => {
-    // Handle ESC key
     const handleEscape = (e: KeyboardEvent) => {
       if (e.key === 'Escape') {
         props.onClose();
@@ -53,13 +82,11 @@ export const HoverPreview: Component<HoverPreviewProps> = (props) => {
     };
     document.addEventListener('keydown', handleEscape);
 
-    // Handle click outside - use capture phase to handle before other clicks
     const handleClickOutside = (e: MouseEvent) => {
       if (containerRef && !containerRef.contains(e.target as Node)) {
         props.onClose();
       }
     };
-    // Use a small delay to avoid closing immediately on the click that opened it
     setTimeout(() => {
       document.addEventListener('click', handleClickOutside, true);
     }, 100);
@@ -67,18 +94,23 @@ export const HoverPreview: Component<HoverPreviewProps> = (props) => {
     onCleanup(() => {
       document.removeEventListener('keydown', handleEscape);
       document.removeEventListener('click', handleClickOutside, true);
+      // Stop animation on cleanup (use captured ID since props.shader may be null)
+      if (activeAnimationId) {
+        props.onAnimationStop?.(activeAnimationId);
+        activeAnimationId = null;
+      }
+      rendererState.current = null;
     });
   });
 
   // Position the preview near the cursor, but keep it on screen
   const position = () => {
-    const previewSize = 512 + 32; // Canvas size + padding
-    const gap = 20; // Gap from cursor
+    const previewSize = 512 + 32;
+    const gap = 20;
 
     let left = props.mouseX + gap;
     let top = props.mouseY + gap;
 
-    // Keep within viewport
     if (left + previewSize > window.innerWidth) {
       left = props.mouseX - previewSize - gap;
     }
@@ -86,7 +118,6 @@ export const HoverPreview: Component<HoverPreviewProps> = (props) => {
       top = props.mouseY - previewSize - gap;
     }
 
-    // Ensure never offscreen
     left = Math.max(10, Math.min(left, window.innerWidth - previewSize - 10));
     top = Math.max(10, Math.min(top, window.innerHeight - previewSize - 10));
 
@@ -116,16 +147,15 @@ export const HoverPreview: Component<HoverPreviewProps> = (props) => {
           <div class="hover-preview-loading">Rendering 512×512...</div>
         </Show>
 
-        <Show when={imageData()}>
-          <canvas
-            ref={canvasRef}
-            width={512}
-            height={512}
-            class="hover-preview-canvas"
-          />
-        </Show>
+        <canvas
+          ref={canvasRef}
+          width={512}
+          height={512}
+          class="hover-preview-canvas"
+          style={{ display: hasContent() ? 'block' : 'none' }}
+        />
 
-        <Show when={!isRendering() && !imageData()}>
+        <Show when={!isRendering() && !hasContent()}>
           <div class="hover-preview-error">Failed to render preview</div>
         </Show>
       </div>

@@ -14,6 +14,8 @@ interface ChildrenGridProps {
   children: ShaderDefinition[];
   onPromote: (child: ShaderDefinition) => void;
   onRenderPreview: (shader: ShaderDefinition, size: number) => Promise<ImageData | null>;
+  onAnimationStart?: (shaderId: string) => void;
+  onAnimationStop?: (shaderId: string) => void;
 }
 
 export const ChildrenGrid: Component<ChildrenGridProps> = (props) => {
@@ -140,6 +142,8 @@ export const ChildrenGrid: Component<ChildrenGridProps> = (props) => {
           mouseY={previewPosition().y}
           onRender={props.onRenderPreview}
           onClose={() => setPreviewShader(null)}
+          onAnimationStart={props.onAnimationStart}
+          onAnimationStop={props.onAnimationStop}
         />
       </Show>
     </div>
