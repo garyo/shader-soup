@@ -103,23 +103,21 @@ export const HoverPreview: Component<HoverPreviewProps> = (props) => {
     });
   });
 
-  // Position the preview near the cursor, but keep it on screen
+  // Position the preview in the viewport corner farthest from the mouse
   const position = () => {
-    const previewSize = 512 + 32;
-    const gap = 20;
+    const margin = 20;
+    const previewWidth = 512 + 32;   // canvas + padding
+    const previewHeight = 512 + 60;  // canvas + header + padding
 
-    let left = props.mouseX + gap;
-    let top = props.mouseY + gap;
+    const mouseInLeftHalf = props.mouseX < window.innerWidth / 2;
+    const mouseInTopHalf = props.mouseY < window.innerHeight / 2;
 
-    if (left + previewSize > window.innerWidth) {
-      left = props.mouseX - previewSize - gap;
-    }
-    if (top + previewSize > window.innerHeight) {
-      top = props.mouseY - previewSize - gap;
-    }
-
-    left = Math.max(10, Math.min(left, window.innerWidth - previewSize - 10));
-    top = Math.max(10, Math.min(top, window.innerHeight - previewSize - 10));
+    const left = mouseInLeftHalf
+      ? window.innerWidth - previewWidth - margin
+      : margin;
+    const top = mouseInTopHalf
+      ? window.innerHeight - previewHeight - margin
+      : margin;
 
     return { left: `${left}px`, top: `${top}px` };
   };
