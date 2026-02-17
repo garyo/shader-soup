@@ -110,7 +110,31 @@ const BINDING_REQUIREMENTS = `* Keep @group and @binding declarations with the R
   - @binding(0): output: texture_storage_2d<rgba32float, write>
   - @binding(1): dimensions: Dimensions (uniform, includes zoom/pan)
   - @binding(2): params: Params (uniform, optional)
-  - @binding(3-4): input texture/sampler (optional, for feedback/image processing)`;
+  - @binding(3-4): prevFrame texture/sampler (optional, for inter-frame feedback — see FEEDBACK section)`;
+
+const FEEDBACK_DOCS = `INTER-FRAME FEEDBACK (prevFrame):
+Shaders can read the previous frame's output to create time-evolving effects like trails, diffusion,
+reaction-diffusion, fluid simulation, and accumulation. Just declare the bindings:
+
+  @group(0) @binding(3) var prevFrame: texture_2d<f32>;
+  @group(0) @binding(4) var prevSampler: sampler;
+
+Then sample it with textureSampleLevel using normalized [0,1] texture coordinates:
+  let texCoord = vec2<f32>(f32(id.x) / f32(dimensions.width), f32(id.y) / f32(dimensions.height));
+  let prev = textureSampleLevel(prevFrame, prevSampler, texCoord, 0.0);
+
+During animation (mouse-over), the output of each frame feeds into the next frame's prevFrame.
+When not animating, prevFrame is black (all zeros) — so feedback shaders look best animated.
+
+Combine with // @iterations N for multi-pass-per-frame effects that also accumulate across frames.
+
+Feedback techniques:
+- Trails: blend current with prev (e.g., mix(prev * 0.95, newColor, 0.3))
+- Diffusion: average prevFrame neighbors and add injection
+- Reaction-diffusion: sample prev neighbors, apply reaction rules, write back
+- Motion blur: offset prevFrame sample by velocity
+- Accumulation: add small amounts each frame for gradual buildup
+- Echo/reverb: sample prev at warped coordinates for spatial echo effects`;
 
 const COORDINATE_SAMPLING = ` * Get normalized UV coordinates using the get_uv() helper function:
   * The function returns vec2<f32> with:
@@ -170,6 +194,8 @@ TECHNICAL REQUIREMENTS:
   * Keep the main function signature
 
 ${PARAMETER_FORMAT}
+
+${FEEDBACK_DOCS}
 
 - All shaders must compile and produce visual output
 - Note: for the modulus (mod) operator, use the utility modf(x)
@@ -348,6 +374,16 @@ SDF SHAPE EXAMPLES (polygon signed distance functions - great for geometric patt
   let warped_hex = sdHexagon(domainWarp(coord * 3.0, 0.3), 0.3);  // Organic warped hexagon
   let color = hsv_to_rgb(d * 3.0, 0.8, smoothstep(0.01, -0.01, d));  // Color from distance
 
+INTER-FRAME FEEDBACK EXAMPLES (declare @binding(3) prevFrame and @binding(4) prevSampler for time-evolving effects!):
+  // Sample previous frame at current pixel
+  let texCoord = vec2<f32>(f32(id.x) / f32(dimensions.width), f32(id.y) / f32(dimensions.height));
+  let prev = textureSampleLevel(prevFrame, prevSampler, texCoord, 0.0);
+  // Trails: fade previous frame and add new content
+  let result = prev * 0.95 + newColor * 0.1;
+  // Diffusion: average neighbors from previous frame for organic spread
+  let left = textureSampleLevel(prevFrame, prevSampler, texCoord + vec2f(-offset, 0.0), 0.0);
+  // Feedback shaders animate on mouse-over — the output feeds back as prevFrame next frame
+
 EXPERIMENTATION (OPTIONAL):
 - You have access to a render_shader tool that lets you SEE what a shader looks like
 - If you're confident in your mutation, skip experimenting and go DIRECTLY to shader_output — this is faster and preferred
@@ -383,6 +419,7 @@ CRITICAL REQUIREMENTS:
   - Add params for interesting constants
   - After evolving, you may delete any params that don't do anything interesting.
   - Try using dimensions.time to add animation! Shaders animate on mouse-over. Add scrolling, pulsing, rotating, or flowing effects.
+  - Try adding inter-frame feedback with prevFrame! Declare @binding(3) var prevFrame: texture_2d<f32> and @binding(4) var prevSampler: sampler, then sample the previous frame to create trails, diffusion, accumulation, or reaction-diffusion effects. These look amazing when animated.
 - With a temp of 0.1, change 1 or 2 of each of those. With a temp of 0.5, change around 5 of each of those. With a temp of 1.0, change most of them so the result is VERY different from the original.
 - With a temp > 0.8, be super creative and invent brand new looks, not just basic variations of the source.
 - BE CREATIVE!

@@ -33,6 +33,7 @@ export interface FeedbackIterationContext {
  * @param outputTexture - The output texture to copy from after each iteration
  * @param labelSuffix - Optional suffix for texture labels (e.g., 'hires')
  * @param onIteration - Callback executed for each iteration, receives context with prevTexture/prevSampler
+ * @param initialTexture - Optional texture to seed the first iteration (for inter-frame feedback). If not provided, starts from black.
  *
  * @example
  * await executeFeedbackLoop(device, {width: 512, height: 512}, 10, outputTexture, '', async (ctx) => {
@@ -46,7 +47,8 @@ export async function executeFeedbackLoop(
   iterations: number,
   outputTexture: GPUTexture,
   labelSuffix: string,
-  onIteration: (context: FeedbackIterationContext) => Promise<void>
+  onIteration: (context: FeedbackIterationContext) => Promise<void>,
+  initialTexture?: GPUTexture,
 ): Promise<void> {
   // Create two textures for ping-pong
   const label = labelSuffix ? `-${labelSuffix}` : '';
@@ -64,15 +66,27 @@ export async function executeFeedbackLoop(
   });
 
   try {
-    // Initialize textureB to black/zero for first iteration
-    // rgba32float uses 16 bytes per pixel (4 channels * 4 bytes each)
-    const zeroData = new Float32Array(dimensions.width * dimensions.height * 4);
-    device.queue.writeTexture(
-      { texture: textureB },
-      zeroData,
-      { bytesPerRow: dimensions.width * 16 },
-      [dimensions.width, dimensions.height]
-    );
+    // Initialize textureB for first iteration
+    if (initialTexture) {
+      // Seed from provided texture (inter-frame feedback)
+      const commandEncoder = device.createCommandEncoder({ label: 'feedback-init-copy' });
+      commandEncoder.copyTextureToTexture(
+        { texture: initialTexture },
+        { texture: textureB },
+        [dimensions.width, dimensions.height]
+      );
+      device.queue.submit([commandEncoder.finish()]);
+    } else {
+      // Start from black/zero
+      // rgba32float uses 16 bytes per pixel (4 channels * 4 bytes each)
+      const zeroData = new Float32Array(dimensions.width * dimensions.height * 4);
+      device.queue.writeTexture(
+        { texture: textureB },
+        zeroData,
+        { bytesPerRow: dimensions.width * 16 },
+        [dimensions.width, dimensions.height]
+      );
+    }
 
     // Create sampler for prevFrame (non-filtering for rgba32float)
     const prevSampler = device.createSampler({

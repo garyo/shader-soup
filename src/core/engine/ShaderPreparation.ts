@@ -59,6 +59,8 @@ export interface ShaderPreparationResult {
   iterations: number;
   /** Whether shader has iterations (feedback loop) */
   hasIterations: boolean;
+  /** Whether shader declares prevFrame input texture binding */
+  hasInputTexture: boolean;
   /** Whether shader has parameters */
   hasParams: boolean;
   /** Compilation time in milliseconds (only if measureCompileTime was true) */
@@ -187,10 +189,12 @@ export async function prepareShader(
   // Determine iteration count and flags
   const iterations = options.iterations ?? getIterationValue(shaderId) ?? shader.iterations ?? 1;
   const hasIterations = iterations > 1;
+  const hasInputTexture = bindingDetection.hasInputTextureBinding;
   const hasParams = bindingDetection.hasParamsBinding; // Use actual binding detection, not just comment parsing
 
-  // Create bind group layout and pipeline
-  const layout = pipelineBuilder.createStandardLayout(hasParams, hasIterations, shader.cacheKey);
+  // Create bind group layout and pipeline — use hasInputTexture (not hasIterations)
+  // so shaders declaring @binding(3) prevFrame always get the correct layout
+  const layout = pipelineBuilder.createStandardLayout(hasParams, hasInputTexture, shader.cacheKey);
   const pipeline = pipelineBuilder.createPipeline({
     shader: compilationResult.module,
     entryPoint: 'main',
@@ -211,6 +215,7 @@ export async function prepareShader(
     workgroups,
     iterations,
     hasIterations,
+    hasInputTexture,
     hasParams,
     compileTime,
   };

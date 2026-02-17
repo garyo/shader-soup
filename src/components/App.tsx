@@ -39,8 +39,7 @@ import perlinCloudsSource from '../shaders/examples/perlin-clouds.wgsl?raw';
 import marbleSource from '../shaders/examples/marble.wgsl?raw';
 import cellularPatternSource from '../shaders/examples/cellular-pattern.wgsl?raw';
 import sineWaveTexturedSource from '../shaders/examples/sine-wave-textured.wgsl?raw';
-// Feedback disabled for now - complicates evolution and slows down rendering
-// import feedbackSource from '../shaders/examples/feedback.wgsl?raw';
+import feedbackSource from '../shaders/examples/feedback.wgsl?raw';
 // Grayscale requires input texture - not included in default examples
 // import grayscaleSource from '../shaders/examples/grayscale.wgsl?raw';
 
@@ -284,12 +283,11 @@ export const App: Component = () => {
         source: sineWaveTexturedSource,
         description: 'Layered polygon SDFs with smooth blending and glow',
       },
-      // Feedback disabled - complicates evolution, hard to get interesting results
-      // {
-      //   name: 'Feedback Loop',
-      //   source: feedbackSource,
-      //   description: 'Iterative diffusion with decay and injection (10 iterations)',
-      // },
+      {
+        name: 'Feedback Loop',
+        source: feedbackSource,
+        description: 'Iterative diffusion with decay and injection — accumulates across animation frames',
+      },
     ];
 
     for (const example of examples) {
@@ -312,6 +310,55 @@ export const App: Component = () => {
 
     // Execute all shaders
     executeAllShaders();
+  };
+
+  /**
+   * Execute a prepared shader, handling iterations and prevFrame bindings.
+   * Encapsulates the three execution modes: feedback loop, single with black prevFrame, and simple.
+   */
+  const executePreparedShader = async (
+    prep: Awaited<ReturnType<typeof prepareShader>>,
+    dimensions: { width: number; height: number },
+    labelSuffix: string,
+  ) => {
+    const device = context.getDevice();
+    const { outputTexture, dimensionsBuffer, paramBuffer, layout, pipeline, workgroups, iterations, hasIterations, hasInputTexture } = prep;
+
+    if (hasIterations) {
+      await executeFeedbackLoop(
+        device, dimensions, iterations, outputTexture, labelSuffix,
+        async (ctx) => {
+          const bindGroup = pipelineBuilder.createStandardBindGroup(
+            layout, outputTexture, dimensionsBuffer, paramBuffer,
+            ctx.prevTexture, ctx.prevSampler,
+          );
+          await executor.execute(createExecutionContext(pipeline, bindGroup, workgroups, outputTexture));
+        },
+      );
+    } else if (hasInputTexture) {
+      // Shader declares prevFrame but no iterations — provide a black texture
+      const blackTexture = device.createTexture({
+        size: [dimensions.width, dimensions.height],
+        format: 'rgba32float',
+        usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST,
+        label: `black-prevframe-${labelSuffix}`,
+      });
+      const blackSampler = device.createSampler({ magFilter: 'nearest', minFilter: 'nearest' });
+      try {
+        const bindGroup = pipelineBuilder.createStandardBindGroup(
+          layout, outputTexture, dimensionsBuffer, paramBuffer,
+          blackTexture, blackSampler,
+        );
+        await executor.execute(createExecutionContext(pipeline, bindGroup, workgroups, outputTexture));
+      } finally {
+        blackTexture.destroy();
+      }
+    } else {
+      const bindGroup = pipelineBuilder.createStandardBindGroup(
+        layout, outputTexture, dimensionsBuffer, paramBuffer,
+      );
+      await executor.execute(createExecutionContext(pipeline, bindGroup, workgroups, outputTexture));
+    }
   };
 
   const executeShader = async (shaderId: string, shaderOverride?: ShaderDefinition) => {
@@ -356,48 +403,13 @@ export const App: Component = () => {
         }
       );
 
-      const { outputTexture, dimensionsBuffer, paramBuffer, layout, pipeline, workgroups, iterations, hasIterations, compileTime } = prep;
+      const { outputTexture, compileTime } = prep;
       const startExec = performance.now();
 
       // Execute shader with GPU error scope handling
       const device = context.getDevice();
       await withGPUErrorScope(device, 'shader execution', async () => {
-        if (hasIterations) {
-          // Feedback loop with texture ping-pong
-          await executeFeedbackLoop(
-            device,
-            superDimensions,
-            iterations,
-            outputTexture,
-            '',
-            async (ctx) => {
-              // Create bind group with prevFrame texture from feedback loop
-              const bindGroup = pipelineBuilder.createStandardBindGroup(
-                layout,
-                outputTexture,
-                dimensionsBuffer,
-                paramBuffer,
-                ctx.prevTexture,
-                ctx.prevSampler
-              );
-
-              // Execute compute shader
-              const executionContext = createExecutionContext(pipeline, bindGroup, workgroups, outputTexture);
-              await executor.execute(executionContext);
-            }
-          );
-        } else {
-          // Single execution (no iterations)
-          const bindGroup = pipelineBuilder.createStandardBindGroup(
-            layout,
-            outputTexture,
-            dimensionsBuffer,
-            paramBuffer
-          );
-
-          const executionContext = createExecutionContext(pipeline, bindGroup, workgroups, outputTexture);
-          await executor.execute(executionContext);
-        }
+        await executePreparedShader(prep, superDimensions, '');
       });
 
       const execTime = performance.now() - startExec;
@@ -524,8 +536,17 @@ export const App: Component = () => {
 
   const handleParameterChange = (shaderId: string, paramName: string, value: number) => {
     shaderStore.updateParameter(shaderId, paramName, value);
-    // Re-execute shader with new parameters
-    executeShader(shaderId);
+    if (animationController.isAnimating(shaderId)) {
+      // Update param buffer in-place — avoids race with animation loop
+      const shader = shaderStore.getShader(shaderId);
+      if (shader) {
+        const paramValues = shaderStore.getParameterValues(shaderId);
+        const paramData = parameterManager.getParameterValues(shader.parameters, paramValues);
+        animationController.updateParameterBuffer(shaderId, paramData);
+      }
+    } else {
+      executeShader(shaderId);
+    }
   };
 
   const handleIterationChange = (shaderId: string, value: number) => {
@@ -536,14 +557,22 @@ export const App: Component = () => {
 
   const handleGlobalParameterChange = (shaderId: string, paramName: keyof import('@/stores/shaderStore').GlobalParameters, value: number) => {
     shaderStore.updateGlobalParameter(shaderId, paramName, value);
-    // Re-execute shader with new global parameters
-    executeShader(shaderId);
+    if (animationController.isAnimating(shaderId)) {
+      const gp = shaderStore.getGlobalParameters(shaderId);
+      animationController.updateGlobalParams(shaderId, gp);
+    } else {
+      executeShader(shaderId);
+    }
   };
 
   const handleGlobalParametersReset = (shaderId: string) => {
     shaderStore.resetGlobalParameters(shaderId);
-    // Re-execute shader with reset parameters
-    executeShader(shaderId);
+    if (animationController.isAnimating(shaderId)) {
+      const gp = shaderStore.getGlobalParameters(shaderId);
+      animationController.updateGlobalParams(shaderId, gp);
+    } else {
+      executeShader(shaderId);
+    }
   };
 
   const handleAnimationStart = async (shaderId: string) => {
@@ -841,46 +870,13 @@ export const App: Component = () => {
         }
       );
 
-      const { outputTexture, dimensionsBuffer, paramBuffer, layout, pipeline, workgroups, iterations, hasIterations } = prep;
+      const { outputTexture } = prep;
 
       addLog(`Rendering at ${superDimensions.width}x${superDimensions.height}...`);
 
       // Execute shader (with iterations if needed) with GPU error scope handling
       await withGPUErrorScope(device, 'shader execution', async () => {
-        if (hasIterations) {
-          // Feedback loop with texture ping-pong
-          await executeFeedbackLoop(
-            device,
-            superDimensions,
-            iterations,
-            outputTexture,
-            'hires',
-            async (ctx) => {
-              const bindGroup = pipelineBuilder.createStandardBindGroup(
-                layout,
-                outputTexture,
-                dimensionsBuffer,
-                paramBuffer,
-                ctx.prevTexture,
-                ctx.prevSampler
-              );
-
-              const executionContext = createExecutionContext(pipeline, bindGroup, workgroups, outputTexture);
-              await executor.execute(executionContext);
-            }
-          );
-        } else {
-          const bindGroup = pipelineBuilder.createStandardBindGroup(
-            layout,
-            outputTexture,
-            dimensionsBuffer,
-            paramBuffer
-          );
-
-          const executionContext = createExecutionContext(pipeline, bindGroup, workgroups, outputTexture);
-          await executor.execute(executionContext);
-        }
-
+        await executePreparedShader(prep, superDimensions, 'hires');
         // CRITICAL: Wait for shader execution to complete
         await context.getDevice().queue.onSubmittedWorkDone();
       });
@@ -978,39 +974,10 @@ export const App: Component = () => {
           }
         );
 
-        const { outputTexture, dimensionsBuffer, paramBuffer, layout, pipeline, workgroups, iterations, hasIterations } = prep;
+        const { outputTexture } = prep;
 
         await withGPUErrorScope(device, 'export render', async () => {
-          if (hasIterations) {
-            await executeFeedbackLoop(
-              device,
-              dimensions,
-              iterations,
-              outputTexture,
-              'export',
-              async (ctx) => {
-                const bindGroup = pipelineBuilder.createStandardBindGroup(
-                  layout,
-                  outputTexture,
-                  dimensionsBuffer,
-                  paramBuffer,
-                  ctx.prevTexture,
-                  ctx.prevSampler
-                );
-                const executionContext = createExecutionContext(pipeline, bindGroup, workgroups, outputTexture);
-                await executor.execute(executionContext);
-              }
-            );
-          } else {
-            const bindGroup = pipelineBuilder.createStandardBindGroup(
-              layout,
-              outputTexture,
-              dimensionsBuffer,
-              paramBuffer
-            );
-            const executionContext = createExecutionContext(pipeline, bindGroup, workgroups, outputTexture);
-            await executor.execute(executionContext);
-          }
+          await executePreparedShader(prep, dimensions, 'export');
         });
 
         // Copy to buffer and convert to ImageData
@@ -1094,39 +1061,10 @@ export const App: Component = () => {
             }
           );
 
-          const { outputTexture, dimensionsBuffer, paramBuffer, layout, pipeline, workgroups, iterations, hasIterations } = prep;
+          const { outputTexture } = prep;
 
           await withGPUErrorScope(device, 'export-all render', async () => {
-            if (hasIterations) {
-              await executeFeedbackLoop(
-                device,
-                dimensions,
-                iterations,
-                outputTexture,
-                'export-all',
-                async (ctx) => {
-                  const bindGroup = pipelineBuilder.createStandardBindGroup(
-                    layout,
-                    outputTexture,
-                    dimensionsBuffer,
-                    paramBuffer,
-                    ctx.prevTexture,
-                    ctx.prevSampler
-                  );
-                  const executionContext = createExecutionContext(pipeline, bindGroup, workgroups, outputTexture);
-                  await executor.execute(executionContext);
-                }
-              );
-            } else {
-              const bindGroup = pipelineBuilder.createStandardBindGroup(
-                layout,
-                outputTexture,
-                dimensionsBuffer,
-                paramBuffer
-              );
-              const executionContext = createExecutionContext(pipeline, bindGroup, workgroups, outputTexture);
-              await executor.execute(executionContext);
-            }
+            await executePreparedShader(prep, dimensions, 'export-all');
           });
 
           const outputSize = dimensions.width * dimensions.height * 4 * 4;
@@ -1311,43 +1249,12 @@ export const App: Component = () => {
         }
       );
 
-      const { outputTexture, dimensionsBuffer, paramBuffer, layout, pipeline, workgroups, iterations, hasIterations } = prep;
+      const { outputTexture } = prep;
 
       // Execute shader
       const device = context.getDevice();
       await withGPUErrorScope(device, 'preview render', async () => {
-        if (hasIterations) {
-          await executeFeedbackLoop(
-            device,
-            dimensions,
-            iterations,
-            outputTexture,
-            '-preview',
-            async (ctx) => {
-              const bindGroup = pipelineBuilder.createStandardBindGroup(
-                layout,
-                outputTexture,
-                dimensionsBuffer,
-                paramBuffer,
-                ctx.prevTexture,
-                ctx.prevSampler
-              );
-
-              const executionContext = createExecutionContext(pipeline, bindGroup, workgroups, outputTexture);
-              await executor.execute(executionContext);
-            }
-          );
-        } else {
-          const bindGroup = pipelineBuilder.createStandardBindGroup(
-            layout,
-            outputTexture,
-            dimensionsBuffer,
-            paramBuffer
-          );
-
-          const executionContext = createExecutionContext(pipeline, bindGroup, workgroups, outputTexture);
-          await executor.execute(executionContext);
-        }
+        await executePreparedShader(prep, dimensions, 'preview');
       });
 
       // Copy HDR texture to buffer for result rendering

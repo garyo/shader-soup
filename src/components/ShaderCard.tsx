@@ -107,7 +107,11 @@ export const ShaderCard: Component<ShaderCardProps> = (props) => {
   const isEvolving = () => evolutionStore.isEvolving(props.shader.id);
 
   return (
-    <div class="shader-card">
+    <div
+      class="shader-card"
+      onMouseEnter={() => props.onAnimationStart(props.shader.id)}
+      onMouseLeave={() => props.onAnimationStop(props.shader.id)}
+    >
       <div class="shader-header">
         <div class="shader-header-left">
           <input
@@ -157,11 +161,7 @@ export const ShaderCard: Component<ShaderCardProps> = (props) => {
         </div>
       </div>
 
-      <div
-        class="shader-canvas-container"
-        onMouseEnter={() => props.onAnimationStart(props.shader.id)}
-        onMouseLeave={() => props.onAnimationStop(props.shader.id)}
-      >
+      <div class="shader-canvas-container">
         <Show
           when={!props.error}
           fallback={

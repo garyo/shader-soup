@@ -35,6 +35,8 @@ export type OnFrameRendered = (shaderId: string, gpuTexture: GPUTexture) => void
 
 export class AnimationController {
   private animations: Map<string, AnimationState> = new Map();
+  private feedbackTextures: Map<string, GPUTexture> = new Map();
+  private feedbackSamplers: Map<string, GPUSampler> = new Map();
   private context: WebGPUContext;
   private pipelineBuilder: PipelineBuilder;
   private executor: Executor;
@@ -65,8 +67,36 @@ export class AnimationController {
     displayDimensions: { width: number; height: number },
     globalParams: { gamma: number; contrast: number },
   ): void {
-    // Stop any existing animation for this shader
+    // Stop any existing animation for this shader (also cleans up feedback textures)
     this.stopAnimation(shaderId);
+
+    // Create persistent feedback texture if shader uses prevFrame
+    if (prep.hasInputTexture) {
+      const device = this.context.getDevice();
+      const feedbackTexture = device.createTexture({
+        size: [superDimensions.width, superDimensions.height],
+        format: 'rgba32float',
+        usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST,
+        label: `feedback-persistent-${shaderId}`,
+      });
+      // Initialize to black
+      const zeroData = new Float32Array(superDimensions.width * superDimensions.height * 4);
+      device.queue.writeTexture(
+        { texture: feedbackTexture },
+        zeroData,
+        { bytesPerRow: superDimensions.width * 16 },
+        [superDimensions.width, superDimensions.height]
+      );
+      this.feedbackTextures.set(shaderId, feedbackTexture);
+
+      const feedbackSampler = device.createSampler({
+        addressModeU: 'mirror-repeat',
+        addressModeV: 'mirror-repeat',
+        magFilter: 'nearest',
+        minFilter: 'nearest',
+      });
+      this.feedbackSamplers.set(shaderId, feedbackSampler);
+    }
 
     const state: AnimationState = {
       prep,
@@ -109,6 +139,13 @@ export class AnimationController {
       cancelAnimationFrame(state.rafId);
       this.animations.delete(shaderId);
     }
+    // Clean up persistent feedback textures
+    const feedbackTexture = this.feedbackTextures.get(shaderId);
+    if (feedbackTexture) {
+      feedbackTexture.destroy();
+      this.feedbackTextures.delete(shaderId);
+      this.feedbackSamplers.delete(shaderId);
+    }
   }
 
   /**
@@ -116,6 +153,33 @@ export class AnimationController {
    */
   isAnimating(shaderId: string): boolean {
     return this.animations.has(shaderId);
+  }
+
+  /**
+   * Update the parameter buffer for a running animation in-place.
+   * This avoids recreating resources and prevents race conditions with the animation loop.
+   */
+  updateParameterBuffer(shaderId: string, paramData: ArrayBuffer): void {
+    const state = this.animations.get(shaderId);
+    if (!state || !state.prep.paramBuffer) return;
+    const device = this.context.getDevice();
+    device.queue.writeBuffer(state.prep.paramBuffer, 0, paramData);
+  }
+
+  /**
+   * Update global parameters (zoom, pan, gamma, contrast) for a running animation.
+   * Zoom/pan are written to the dimensions buffer; gamma/contrast update post-processing state.
+   */
+  updateGlobalParams(shaderId: string, globalParams: { zoom: number; panX: number; panY: number; gamma: number; contrast: number }): void {
+    const state = this.animations.get(shaderId);
+    if (!state) return;
+    const device = this.context.getDevice();
+    // Update zoom at offset 8 (field index 2)
+    device.queue.writeBuffer(state.prep.dimensionsBuffer, 8, new Float32Array([globalParams.zoom]));
+    // Update panX at offset 16, panY at offset 20
+    device.queue.writeBuffer(state.prep.dimensionsBuffer, 16, new Float32Array([globalParams.panX, globalParams.panY]));
+    // Update post-processing params
+    state.globalParams = { gamma: globalParams.gamma, contrast: globalParams.contrast };
   }
 
   /**
@@ -147,8 +211,66 @@ export class AnimationController {
     device.queue.writeBuffer(prep.dimensionsBuffer, 28, frameData);
 
     // Execute shader
+    const feedbackTexture = this.feedbackTextures.get(shaderId);
+    const feedbackSampler = this.feedbackSamplers.get(shaderId);
+
     await withGPUErrorScope(device, 'animation frame', async () => {
-      if (prep.hasIterations) {
+      if (prep.hasInputTexture && prep.hasIterations && feedbackTexture && feedbackSampler) {
+        // Case A: prevFrame + iterations — run feedback loop seeded from persistent texture
+        await executeFeedbackLoop(
+          device,
+          superDimensions,
+          prep.iterations,
+          prep.outputTexture,
+          '',
+          async (ctx) => {
+            const bindGroup = this.pipelineBuilder.createStandardBindGroup(
+              prep.layout,
+              prep.outputTexture,
+              prep.dimensionsBuffer,
+              prep.paramBuffer,
+              ctx.prevTexture,
+              ctx.prevSampler,
+            );
+            const executionContext = createExecutionContext(
+              prep.pipeline, bindGroup, prep.workgroups, prep.outputTexture,
+            );
+            await this.executor.execute(executionContext);
+          },
+          feedbackTexture, // seed from previous frame's output
+        );
+        // Copy final output back to persistent feedback texture for next frame
+        const copyEncoder = device.createCommandEncoder({ label: 'feedback-persist-copy' });
+        copyEncoder.copyTextureToTexture(
+          { texture: prep.outputTexture },
+          { texture: feedbackTexture },
+          [superDimensions.width, superDimensions.height]
+        );
+        device.queue.submit([copyEncoder.finish()]);
+      } else if (prep.hasInputTexture && feedbackTexture && feedbackSampler) {
+        // Case B: prevFrame only (no iterations) — bind persistent texture directly
+        const bindGroup = this.pipelineBuilder.createStandardBindGroup(
+          prep.layout,
+          prep.outputTexture,
+          prep.dimensionsBuffer,
+          prep.paramBuffer,
+          feedbackTexture,
+          feedbackSampler,
+        );
+        const executionContext = createExecutionContext(
+          prep.pipeline, bindGroup, prep.workgroups, prep.outputTexture,
+        );
+        await this.executor.execute(executionContext);
+        // Copy output back to persistent feedback texture for next frame
+        const copyEncoder = device.createCommandEncoder({ label: 'feedback-persist-copy' });
+        copyEncoder.copyTextureToTexture(
+          { texture: prep.outputTexture },
+          { texture: feedbackTexture },
+          [superDimensions.width, superDimensions.height]
+        );
+        device.queue.submit([copyEncoder.finish()]);
+      } else if (prep.hasIterations) {
+        // Case C: iterations only (no prevFrame) — existing behavior
         await executeFeedbackLoop(
           device,
           superDimensions,
@@ -171,6 +293,7 @@ export class AnimationController {
           },
         );
       } else {
+        // Case D: no prevFrame, no iterations — simple execution
         const bindGroup = this.pipelineBuilder.createStandardBindGroup(
           prep.layout,
           prep.outputTexture,
