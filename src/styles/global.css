@@ -9,7 +9,9 @@
   --text-muted: #9ca3af;
   --border-color: #2d3748;
   --error-color: #ef4444;
+  --warning-color: #f59e0b;
   --success-color: #10b981;
+  --primary-hover: #5a72d4;
   --shadow: 0 4px 6px rgba(0, 0, 0, 0.3);
 }
 
@@ -115,12 +117,6 @@ body {
   max-width: 1400px;
   margin: 0 auto;
   padding: 2rem;
-}
-
-.app-info {
-  text-align: center;
-  margin-bottom: 2rem;
-  color: var(--text-muted);
 }
 
 .app-error {
@@ -1218,10 +1214,6 @@ body {
 @media (max-width: 768px) {
   .shader-grid {
     grid-template-columns: 1fr;
-  }
-
-  .app-header h1 {
-    font-size: 2rem;
   }
 
   .shader-code-modal {

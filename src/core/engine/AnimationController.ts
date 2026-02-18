@@ -29,6 +29,9 @@ export interface AnimationState {
   displayDimensions: { width: number; height: number };
   /** Global params for post-processing */
   globalParams: { gamma: number; contrast: number };
+  /** Pre-allocated typed arrays for per-frame uniform writes */
+  timeData: Float32Array;
+  frameData: Uint32Array;
 }
 
 export type OnFrameRendered = (shaderId: string, gpuTexture: GPUTexture) => void;
@@ -88,17 +91,20 @@ export class AnimationController {
       const feedbackTexture = device.createTexture({
         size: [superDimensions.width, superDimensions.height],
         format: 'rgba32float',
-        usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST,
+        usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST | GPUTextureUsage.RENDER_ATTACHMENT,
         label: `feedback-persistent-${shaderId}`,
       });
-      // Initialize to black
-      const zeroData = new Float32Array(superDimensions.width * superDimensions.height * 4);
-      device.queue.writeTexture(
-        { texture: feedbackTexture },
-        zeroData,
-        { bytesPerRow: superDimensions.width * 16 },
-        [superDimensions.width, superDimensions.height]
-      );
+      // Initialize to black using GPU clear pass (avoids 36MB CPU allocation)
+      const clearEncoder = device.createCommandEncoder({ label: 'feedback-clear' });
+      clearEncoder.beginRenderPass({
+        colorAttachments: [{
+          view: feedbackTexture.createView(),
+          loadOp: 'clear',
+          storeOp: 'store',
+          clearValue: { r: 0, g: 0, b: 0, a: 0 },
+        }],
+      }).end();
+      device.queue.submit([clearEncoder.finish()]);
       this.feedbackTextures.set(shaderId, feedbackTexture);
 
       const feedbackSampler = device.createSampler({
@@ -119,6 +125,8 @@ export class AnimationController {
       superDimensions,
       displayDimensions,
       globalParams,
+      timeData: new Float32Array(1),
+      frameData: new Uint32Array(1),
     };
 
     this.animations.set(shaderId, state);
@@ -207,18 +215,20 @@ export class AnimationController {
     state.startTime = performance.now();
     state.frameCount = 0;
 
-    // Clear feedback texture to black
+    // Clear feedback texture to black using GPU clear pass
     const feedbackTexture = this.feedbackTextures.get(shaderId);
     if (feedbackTexture) {
       const device = this.context.getDevice();
-      const { width, height } = state.superDimensions;
-      const zeroData = new Float32Array(width * height * 4);
-      device.queue.writeTexture(
-        { texture: feedbackTexture },
-        zeroData,
-        { bytesPerRow: width * 16 },
-        [width, height]
-      );
+      const clearEncoder = device.createCommandEncoder({ label: 'feedback-reset-clear' });
+      clearEncoder.beginRenderPass({
+        colorAttachments: [{
+          view: feedbackTexture.createView(),
+          loadOp: 'clear',
+          storeOp: 'store',
+          clearValue: { r: 0, g: 0, b: 0, a: 0 },
+        }],
+      }).end();
+      device.queue.submit([clearEncoder.finish()]);
     }
   }
 
@@ -251,13 +261,13 @@ export class AnimationController {
     const elapsed = (performance.now() - state.startTime) / 1000.0; // seconds
     state.frameCount++;
 
-    // Write time (f32) at offset 24 (field index 6)
-    const timeData = new Float32Array([elapsed]);
-    device.queue.writeBuffer(prep.dimensionsBuffer, 24, timeData);
+    // Write time (f32) at offset 24 (field index 6) — reuse pre-allocated array
+    state.timeData[0] = elapsed;
+    device.queue.writeBuffer(prep.dimensionsBuffer, 24, state.timeData as unknown as Float32Array<ArrayBuffer>);
 
-    // Write frame (u32) at offset 28 (field index 7)
-    const frameData = new Uint32Array([state.frameCount]);
-    device.queue.writeBuffer(prep.dimensionsBuffer, 28, frameData);
+    // Write frame (u32) at offset 28 (field index 7) — reuse pre-allocated array
+    state.frameData[0] = state.frameCount;
+    device.queue.writeBuffer(prep.dimensionsBuffer, 28, state.frameData as unknown as Uint32Array<ArrayBuffer>);
 
     // Execute shader
     const feedbackTexture = this.feedbackTextures.get(shaderId);

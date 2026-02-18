@@ -119,7 +119,6 @@ export async function executeFeedbackLoop(
           [dimensions.width, dimensions.height]
         );
         device.queue.submit([commandEncoder.finish()]);
-        await device.queue.onSubmittedWorkDone();
       }
     }
   } finally {

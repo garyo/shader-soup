@@ -9,7 +9,6 @@ import type { BufferManager } from './BufferManager';
 export class GPUPostProcessor {
   private context: WebGPUContext;
   private compiler: ShaderCompiler;
-  private bufferManager: BufferManager;
   private pipeline: GPUComputePipeline | null = null;
   private shaderModule: GPUShaderModule | null = null;
   private initialized: boolean = false;
@@ -24,14 +23,25 @@ export class GPUPostProcessor {
   private mipmapPipeline: GPURenderPipeline | null = null;
   private mipmapSampler: GPUSampler | null = null;
 
+  // Cached uniform buffers (reused every frame)
+  private dimensionsBuffer: GPUBuffer | null = null;
+  private paramsBuffer: GPUBuffer | null = null;
+
+  // Cached bind group (recreated only when input/output textures change)
+  private cachedBindGroup: GPUBindGroup | null = null;
+  private cachedBindGroupKey: string = '';
+
+  // Reusable typed arrays for writing to buffers
+  private dimensionsData = new Uint32Array(2);
+  private paramsData = new Float32Array(2);
+
   constructor(
     context: WebGPUContext,
     compiler: ShaderCompiler,
-    bufferManager: BufferManager
+    _bufferManager: BufferManager
   ) {
     this.context = context;
     this.compiler = compiler;
-    this.bufferManager = bufferManager;
   }
 
   /**
@@ -104,6 +114,19 @@ export class GPUPostProcessor {
       },
     });
 
+    // Pre-allocate uniform buffers (reused every frame via writeBuffer)
+    this.dimensionsBuffer = device.createBuffer({
+      size: 8, // 2 x u32
+      usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+      label: 'post-processor-dimensions',
+    });
+
+    this.paramsBuffer = device.createBuffer({
+      size: 8, // 2 x f32
+      usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+      label: 'post-processor-params',
+    });
+
     this.initialized = true;
   }
 
@@ -144,64 +167,39 @@ export class GPUPostProcessor {
       this.texturePool.set(poolKey, outputTexture);
     }
 
-    // Create uniform buffers
-    const dimensionsData = new Uint32Array([dimensions.width, dimensions.height]);
-    const dimensionsBuffer = this.bufferManager.createBufferWithData(
-      dimensionsData,
-      GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
-      'post-processor-dimensions'
-    );
+    // Update uniform buffers in-place (no allocation)
+    this.dimensionsData[0] = dimensions.width;
+    this.dimensionsData[1] = dimensions.height;
+    device.queue.writeBuffer(this.dimensionsBuffer!, 0, this.dimensionsData);
 
-    const paramsData = new Float32Array([gamma, contrast]);
-    const paramsBuffer = this.bufferManager.createBufferWithData(
-      paramsData,
-      GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
-      'post-processor-params'
-    );
+    this.paramsData[0] = gamma;
+    this.paramsData[1] = contrast;
+    device.queue.writeBuffer(this.paramsBuffer!, 0, this.paramsData);
 
-    // Create bind group
-    const bindGroup = device.createBindGroup({
-      label: 'gpu-post-processor-bind-group',
-      layout: this.pipeline!.getBindGroupLayout(0),
-      entries: [
-        { binding: 0, resource: inputTexture.createView() },
-        { binding: 1, resource: outputTexture.createView() },
-        { binding: 2, resource: { buffer: dimensionsBuffer } },
-        { binding: 3, resource: { buffer: paramsBuffer } },
-      ],
-    });
-
-    // Execute post-processing
-    const encoder = device.createCommandEncoder({ label: 'gpu-post-processor-encoder' });
-    const pass = encoder.beginComputePass({ label: 'gpu-post-processor-pass' });
-
-    pass.setPipeline(this.pipeline!);
-    pass.setBindGroup(0, bindGroup);
-
-    // Calculate workgroups
-    const workgroupsX = Math.ceil(dimensions.width / 8);
-    const workgroupsY = Math.ceil(dimensions.height / 8);
-    pass.dispatchWorkgroups(workgroupsX, workgroupsY);
-
-    pass.end();
-
-    device.queue.submit([encoder.finish()]);
-    await device.queue.onSubmittedWorkDone();
+    // Recreate bind group only when input/output textures change
+    const bindGroupKey = `${inputTexture.label}:${poolKey}`;
+    if (this.cachedBindGroupKey !== bindGroupKey) {
+      this.cachedBindGroup = device.createBindGroup({
+        label: 'gpu-post-processor-bind-group',
+        layout: this.pipeline!.getBindGroupLayout(0),
+        entries: [
+          { binding: 0, resource: inputTexture.createView() },
+          { binding: 1, resource: outputTexture.createView() },
+          { binding: 2, resource: { buffer: this.dimensionsBuffer! } },
+          { binding: 3, resource: { buffer: this.paramsBuffer! } },
+        ],
+      });
+      this.cachedBindGroupKey = bindGroupKey;
+    }
 
     // Create filterable display texture with mipmaps (for antialiased rendering)
-    // Storage textures are unfilterable, so we need a separate texture for display
     const displayPoolKey = `display-${poolKey}`;
-
-    // Use 4 mip levels for smoother 3× downsampling
-    // Mip 0: 1536×1536, Mip 1: 768×768, Mip 2: 384×384, Mip 3: 192×192
-    // For 512×512 display, GPU picks mip ~1.58 (interpolates between 768 and 384)
     const mipLevelCount = 4;
 
     let displayTexture = this.displayTexturePool.get(displayPoolKey);
 
     // Check if pooled texture has wrong mip count (from previous runs)
     if (displayTexture && displayTexture.mipLevelCount !== mipLevelCount) {
-      // Recreate with correct mip count (happens after code changes)
       displayTexture.destroy();
       this.displayTexturePool.delete(displayPoolKey);
       displayTexture = undefined;
@@ -216,25 +214,34 @@ export class GPUPostProcessor {
         label: `display-texture-${shaderId}`,
       });
       this.displayTexturePool.set(displayPoolKey, displayTexture);
-      // Texture created and pooled (only logs once per shader unless mip count changes)
     }
 
-    // Copy storage texture to filterable texture (mip level 0)
-    const copyEncoder = device.createCommandEncoder({ label: 'copy-to-display-texture' });
-    copyEncoder.copyTextureToTexture(
+    // Batch all work into a single command encoder + submit:
+    // 1. Post-process compute dispatch
+    // 2. Copy storage texture to display texture (mip 0)
+    const encoder = device.createCommandEncoder({ label: 'gpu-post-processor-batch' });
+
+    // 1. Post-process compute pass
+    const pass = encoder.beginComputePass({ label: 'gpu-post-processor-pass' });
+    pass.setPipeline(this.pipeline!);
+    pass.setBindGroup(0, this.cachedBindGroup!);
+    const workgroupsX = Math.ceil(dimensions.width / 8);
+    const workgroupsY = Math.ceil(dimensions.height / 8);
+    pass.dispatchWorkgroups(workgroupsX, workgroupsY);
+    pass.end();
+
+    // 2. Copy to display texture (mip 0)
+    encoder.copyTextureToTexture(
       { texture: outputTexture },
-      { texture: displayTexture, mipLevel: 0 }, // Explicitly copy to mip 0
+      { texture: displayTexture, mipLevel: 0 },
       { width: dimensions.width, height: dimensions.height }
     );
-    device.queue.submit([copyEncoder.finish()]);
-    await device.queue.onSubmittedWorkDone();
 
-    // Generate mipmaps for proper antialiased downsampling
-    await this.generateMipmaps(device, displayTexture);
+    device.queue.submit([encoder.finish()]);
 
-    // Return both textures:
-    // - storageTexture: rgba32float for ImageData generation (App.tsx expects this format)
-    // - displayTexture: rgba16float filterable for WebGPU canvas rendering
+    // 3. Generate mipmaps (single submit internally)
+    this.generateMipmaps(device, displayTexture);
+
     return {
       storageTexture: outputTexture,
       displayTexture: displayTexture,
@@ -289,29 +296,30 @@ export class GPUPostProcessor {
   /**
    * Generate mipmaps for a texture (for antialiased downsampling)
    */
-  private async generateMipmaps(
+  private generateMipmaps(
     device: GPUDevice,
     texture: GPUTexture
-  ): Promise<void> {
-    await this.initMipmapPipeline();
+  ): void {
+    if (!this.mipmapPipeline) {
+      // Pipeline not ready yet - skip mipmaps this frame
+      // (initMipmapPipeline is async, but we don't want to await in hot path)
+      this.initMipmapPipeline();
+      return;
+    }
 
-    // Use the texture's actual mip count, not recalculated from dimensions
     const mipLevelCount = texture.mipLevelCount;
     const encoder = device.createCommandEncoder({ label: 'generate-mipmaps' });
 
-    // Generate each mip level by sampling from the previous level with linear filtering
     for (let mipLevel = 1; mipLevel < mipLevelCount; mipLevel++) {
-      // Create bind group to sample from previous mip level
       const bindGroup = device.createBindGroup({
         label: `mipmap-bind-group-${mipLevel}`,
-        layout: this.mipmapPipeline!.getBindGroupLayout(0),
+        layout: this.mipmapPipeline.getBindGroupLayout(0),
         entries: [
           { binding: 0, resource: texture.createView({ baseMipLevel: mipLevel - 1, mipLevelCount: 1 }) },
           { binding: 1, resource: this.mipmapSampler! },
         ],
       });
 
-      // Render to current mip level
       const renderPass = encoder.beginRenderPass({
         label: `mip-level-${mipLevel}`,
         colorAttachments: [{
@@ -322,15 +330,13 @@ export class GPUPostProcessor {
         }],
       });
 
-      renderPass.setPipeline(this.mipmapPipeline!);
+      renderPass.setPipeline(this.mipmapPipeline);
       renderPass.setBindGroup(0, bindGroup);
-      renderPass.draw(3); // Fullscreen triangle
-
+      renderPass.draw(3);
       renderPass.end();
     }
 
     device.queue.submit([encoder.finish()]);
-    await device.queue.onSubmittedWorkDone();
   }
 
   /**
@@ -349,6 +355,11 @@ export class GPUPostProcessor {
         this.displayTexturePool.delete(key);
       }
     }
+    // Invalidate cached bind group if it referenced this shader's textures
+    if (this.cachedBindGroupKey.includes(shaderId)) {
+      this.cachedBindGroup = null;
+      this.cachedBindGroupKey = '';
+    }
   }
 
   /**
@@ -364,5 +375,8 @@ export class GPUPostProcessor {
       texture.destroy();
     }
     this.displayTexturePool.clear();
+
+    this.cachedBindGroup = null;
+    this.cachedBindGroupKey = '';
   }
 }

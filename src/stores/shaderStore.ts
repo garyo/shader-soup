@@ -304,21 +304,6 @@ export const shaderStore = {
   },
 
   /**
-   * Toggle shader active state
-   */
-  toggleShader(id: string) {
-    setState('activeShaders', (active) => {
-      const newActive = new Set(active);
-      if (newActive.has(id)) {
-        newActive.delete(id);
-      } else {
-        newActive.add(id);
-      }
-      return newActive;
-    });
-  },
-
-  /**
    * Select a shader
    */
   selectShader(id: string | null) {

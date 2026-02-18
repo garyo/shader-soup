@@ -147,19 +147,6 @@ export interface PerformanceMetrics {
 
 // Type guards
 
-export function isDimensions(value: unknown): value is Dimensions {
-  return (
-    typeof value === 'object' &&
-    value !== null &&
-    'width' in value &&
-    'height' in value &&
-    typeof (value as Dimensions).width === 'number' &&
-    typeof (value as Dimensions).height === 'number' &&
-    (value as Dimensions).width > 0 &&
-    (value as Dimensions).height > 0
-  );
-}
-
 export function isShaderParameter(value: unknown): value is ShaderParameter {
   return (
     typeof value === 'object' &&
@@ -177,38 +164,7 @@ export function isShaderParameter(value: unknown): value is ShaderParameter {
   );
 }
 
-export function isWorkgroupDimensions(value: unknown): value is WorkgroupDimensions {
-  return (
-    typeof value === 'object' &&
-    value !== null &&
-    'x' in value &&
-    'y' in value &&
-    typeof (value as WorkgroupDimensions).x === 'number' &&
-    typeof (value as WorkgroupDimensions).y === 'number' &&
-    (value as WorkgroupDimensions).x > 0 &&
-    (value as WorkgroupDimensions).y > 0
-  );
-}
-
 // Validators
-
-export function validateDimensions(value: unknown): ValidationResult<Dimensions> {
-  if (!isDimensions(value)) {
-    return {
-      valid: false,
-      errors: ['Invalid dimensions: must have positive width and height'],
-    };
-  }
-
-  if (value.width > 8192 || value.height > 8192) {
-    return {
-      valid: false,
-      errors: ['Dimensions too large: maximum 8192x8192'],
-    };
-  }
-
-  return { valid: true, value, errors: [] };
-}
 
 export function validateShaderParameter(value: unknown): ValidationResult<ShaderParameter> {
   if (!isShaderParameter(value)) {

@@ -17,7 +17,6 @@ import { ParameterManager } from '@/core/engine/ParameterManager';
 import { PipelineBuilder } from '@/core/engine/PipelineBuilder';
 import { Executor, createExecutionContext } from '@/core/engine/Executor';
 import { GPUPostProcessor } from '@/core/engine/GPUPostProcessor';
-// CoordinateGenerator and CanvasRenderer no longer needed in App - CanvasRenderer used in ShaderEvolver
 import { ResultRenderer } from '@/core/output/ResultRenderer';
 import { PostProcessor } from '@/core/output/PostProcessor';
 import { withGPUErrorScope } from '@/core/engine/GPUErrorHandler';
@@ -40,8 +39,6 @@ import marbleSource from '../shaders/examples/marble.wgsl?raw';
 import cellularPatternSource from '../shaders/examples/cellular-pattern.wgsl?raw';
 import sineWaveTexturedSource from '../shaders/examples/sine-wave-textured.wgsl?raw';
 import feedbackSource from '../shaders/examples/feedback.wgsl?raw';
-// Grayscale requires input texture - not included in default examples
-// import grayscaleSource from '../shaders/examples/grayscale.wgsl?raw';
 
 // ============================================================================
 // Evolution Configuration
@@ -74,8 +71,6 @@ export const App: Component = () => {
     });
   };
 
-  // GPU downsampling is now handled in ResultRenderer
-
   // WebGPU components
   let context: WebGPUContext;
   let compiler: ShaderCompiler;
@@ -83,15 +78,11 @@ export const App: Component = () => {
   let parameterManager: ParameterManager;
   let pipelineBuilder: PipelineBuilder;
   let executor: Executor;
-  // CoordinateGenerator removed - UV coords computed directly in shaders
   let resultRenderer: ResultRenderer;
   let postProcessor: PostProcessor;
   let gpuPostProcessor: GPUPostProcessor;
   let shaderEvolver: ShaderEvolver;
   let animationController: AnimationController;
-
-  // GPU-only mode flag (set to true to eliminate CPU readback)
-  const USE_GPU_ONLY_PATH = true;
 
   // Initialize WebGPU and load example shaders
   onMount(async () => {
@@ -105,7 +96,6 @@ export const App: Component = () => {
       parameterManager = new ParameterManager(bufferManager);
       pipelineBuilder = new PipelineBuilder(context);
       executor = new Executor(context, true); // Enable profiling
-      // CoordinateGenerator removed - UV coords computed directly in shaders
       resultRenderer = new ResultRenderer(bufferManager, context);
       postProcessor = new PostProcessor(context, bufferManager);
       gpuPostProcessor = new GPUPostProcessor(context, compiler, bufferManager);
@@ -424,94 +414,39 @@ export const App: Component = () => {
 
       const execTime = performance.now() - startExec;
 
-      let imageData: ImageData | undefined;
-      let postProcessTime = 0;
-      let downsampleTime = 0;
-      let gpuTexture: GPUTexture | undefined;
-
-      if (USE_GPU_ONLY_PATH) {
-        // 🚀 GPU-ONLY PATH: Zero CPU readback
-        addLog('Using GPU-only rendering path with WebGPU canvas display', 'info');
-
-        // Apply gamma/contrast on GPU (texture → texture)
-        // Uses texture pooling to prevent flashing during parameter changes
-        const postProcessStart = performance.now();
-        const processed = await withGPUErrorScope(device, 'gpu-post-processing', async () => {
-          return await gpuPostProcessor.applyGammaContrast(
-            shaderId,  // For texture pooling
-            outputTexture,
-            superDimensions,
-            globalParams.gamma,
-            globalParams.contrast
-          );
-        });
-        postProcessTime = performance.now() - postProcessStart;
-
-        // Use display texture for WebGPU rendering (filterable, with mipmaps for smooth downsampling)
-        gpuTexture = processed.displayTexture;
-
-        // Skip imageData creation - will be created on-demand for downloads at higher resolution
-        // No CPU readback needed for normal rendering!
-
-        addLog(`GPU-only pipeline: exec=${execTime.toFixed(1)}ms, post=${postProcessTime.toFixed(1)}ms (zero CPU readback)`, 'success');
-      } else {
-        // LEGACY PATH: Uses CPU readback (backward compatibility)
-        const outputSize = superDimensions.width * superDimensions.height * 4 * 4;
-        const outputBuffer = bufferManager.createBuffer({
-          size: outputSize,
-          usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST | GPUBufferUsage.COPY_SRC,
-          label: 'texture-copy-buffer',
-        }, false);
-
-        const copyEncoder = device.createCommandEncoder({ label: 'texture-to-buffer-copy' });
-        copyEncoder.copyTextureToBuffer(
-          { texture: outputTexture },
-          { buffer: outputBuffer, bytesPerRow: superDimensions.width * 16, offset: 0 },
-          { width: superDimensions.width, height: superDimensions.height }
+      // GPU-only path: zero CPU readback
+      const postProcessStart = performance.now();
+      const processed = await withGPUErrorScope(device, 'gpu-post-processing', async () => {
+        return await gpuPostProcessor.applyGammaContrast(
+          shaderId,
+          outputTexture,
+          superDimensions,
+          globalParams.gamma,
+          globalParams.contrast
         );
-        device.queue.submit([copyEncoder.finish()]);
-        await device.queue.onSubmittedWorkDone();
+      });
+      const postProcessTime = performance.now() - postProcessStart;
 
-        const postProcessStart = performance.now();
-        const processedBuffer = await withGPUErrorScope(device, 'post-processing', async () => {
-          return await postProcessor.applyGammaContrast(
-            outputBuffer,
-            superDimensions,
-            globalParams.gamma,
-            globalParams.contrast
-          );
-        });
-        postProcessTime = performance.now() - postProcessStart;
+      const gpuTexture = processed.displayTexture;
 
-        const downsampleStart = performance.now();
-        imageData = await withGPUErrorScope(device, 'downsampling', async () => {
-          const downsampledBuffer = resultRenderer.downsample(processedBuffer, superDimensions, dimensions, supersampleFactor);
-          return await resultRenderer.bufferToImageData(downsampledBuffer, dimensions);
-        });
-        downsampleTime = performance.now() - downsampleStart;
-
-        addLog(`Legacy pipeline: exec=${execTime.toFixed(1)}ms, post=${postProcessTime.toFixed(1)}ms, downsample=${downsampleTime.toFixed(1)}ms`, 'success');
-      }
-
-      const totalTime = (compileTime ?? 0) + execTime + postProcessTime + downsampleTime;
+      const totalTime = (compileTime ?? 0) + execTime + postProcessTime;
 
       // Log execution time
       addLog(
-        `Rendered "${shader.name}": compile ${(compileTime ?? 0).toFixed(1)}ms + exec ${execTime.toFixed(1)}ms + post ${postProcessTime.toFixed(1)}ms + downsample ${downsampleTime.toFixed(1)}ms = ${totalTime.toFixed(1)}ms (${superDimensions.width}x${superDimensions.height} → ${dimensions.width}x${dimensions.height})`
+        `Rendered "${shader.name}": compile ${(compileTime ?? 0).toFixed(1)}ms + exec ${execTime.toFixed(1)}ms + post ${postProcessTime.toFixed(1)}ms = ${totalTime.toFixed(1)}ms (${superDimensions.width}x${superDimensions.height} → ${dimensions.width}x${dimensions.height})`
       );
 
       // Log slow renders to console for debugging
       if (totalTime > 500) {
-        console.warn(`[RENDER] Slow render of "${shader.name}" (${totalTime.toFixed(1)}ms): compile=${(compileTime ?? 0).toFixed(1)}ms, exec=${execTime.toFixed(1)}ms, post=${postProcessTime.toFixed(1)}ms, downsample=${downsampleTime.toFixed(1)}ms`);
+        console.warn(`[RENDER] Slow render of "${shader.name}" (${totalTime.toFixed(1)}ms): compile=${(compileTime ?? 0).toFixed(1)}ms, exec=${execTime.toFixed(1)}ms, post=${postProcessTime.toFixed(1)}ms`);
       }
 
       // Update result store
       resultStore.updateResult({
         shaderId,
-        imageData,
         executionTime: totalTime,
         timestamp: new Date(),
-        gpuTexture,  // Include GPU texture for WebGPU canvas rendering
+        gpuTexture,
       });
 
       resultStore.clearError(shaderId);

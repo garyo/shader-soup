@@ -205,12 +205,6 @@ ${FEEDBACK_DOCS}
 // Type Definitions
 // ============================================================================
 
-export interface MutationPromptParams {
-  shaderSource: string;
-  temperature: number;
-  preserveParams: boolean;
-}
-
 export interface BatchMutationPromptParams {
   shaderSource: string;
   count: number;
@@ -293,48 +287,6 @@ The tool expects a JSON object with a "shaders" array, each containing:
 - "changelog" (optional): Brief notes on how the parent shaders were combined
 
 Be creative with the names - use evocative, descriptive titles that hint at the visual or mathematical nature of the mashup!`;
-
-  return { system, user };
-}
-
-/**
- * Mutation prompt - asks Claude to creatively modify a shader
- * Returns system (cacheable) and user (task-specific) parts
- */
-export function createMutationPrompt(params: MutationPromptParams): PromptWithSystem {
-  const creativityLevel = params.temperature > 0.75 ? 'very creative and experimental'
-    : params.temperature > 0.65 ? 'moderately creative with bold experimentation'
-    : 'creative with some variation';
-
-  const changeCount = Math.floor(params.temperature * 8) + 2; // 2-10 changes
-
-  const system = SYSTEM_PROMPT_BASE;
-
-  const user = `Your task is to mutate the following WGSL compute shader in ${creativityLevel} ways.
-
-ORIGINAL SHADER:
-\`\`\`wgsl
-${params.shaderSource}
-\`\`\`
-
-MUTATION GUIDELINES:
-- Make ${changeCount} DISTINCT creative changes to the shader logic
-- Creativity level: ${creativityLevel}
-- Each mutation should produce VISUALLY DIFFERENT results
-- Don't repeat yourself; always try something different from previous attempts
-- Ideas: change color calculations, add new mathematical functions (sin, cos, abs, fract, mix), alter patterns, combine operations differently, use different coordinate transformations
-- USE THE NOISE LIBRARY: Incorporate perlinNoise2, fbmPerlin, cellularNoise, turbulence, domainWarp, and other noise functions for organic patterns
-- USE SDF SHAPES: Try sdHexagon, sdStar, sdPentagram, sdEquilateralTriangle, sdOctagon etc. for crisp geometric forms. Combine with smooth_min for organic blends, fract() for rings, or noise for warped geometry
-- IMPORTANT: Make each mutation VISUALLY DISTINCT from the original and from previous mutations
-- Try different approaches: spiral patterns, wave interference, cellular automata, fractals, noise functions (Perlin, FBM, cellular, turbulence)
-- Vary the mathematical operations: use different combinations of trig functions, exponentials, power functions, AND noise functions
-- Experiment with color schemes: HSV conversions, complementary colors, gradients, discrete color palettes, noise-based coloring
-- The shader should still compile and produce visual output
-- Be creative with the visual logic but maintain technical correctness
-- AVOID making the same type of change multiple times - be diverse!
-
-OUTPUT FORMAT:
-Return ONLY the complete mutated shader code, nothing else. Do not include explanations or markdown code blocks.`;
 
   return { system, user };
 }

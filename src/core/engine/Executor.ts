@@ -54,18 +54,17 @@ export class Executor {
       const commandBuffer = encoder.finish();
       device.queue.submit([commandBuffer]);
 
-      // Wait for completion
-      await device.queue.onSubmittedWorkDone();
-
       if (this.enableProfiling) {
+        // Only sync when profiling to get accurate timing
+        await device.queue.onSubmittedWorkDone();
         const endTime = performance.now();
-        return {
-          compilationTime: 0, // Not measured here
-          executionTime: endTime - startTime,
-          bufferUploadTime: 0,
-          bufferDownloadTime: 0,
-          totalTime: endTime - startTime,
-        };
+          return {
+            compilationTime: 0, // Not measured here
+            executionTime: endTime - startTime,
+            bufferUploadTime: 0,
+            bufferDownloadTime: 0,
+            totalTime: endTime - startTime,
+          };
       }
     } catch (error) {
       throw new GPUExecutionError(
@@ -116,10 +115,8 @@ export class Executor {
       // Submit all command buffers at once
       device.queue.submit(commandBuffers);
 
-      // Wait for completion
-      await device.queue.onSubmittedWorkDone();
-
       if (this.enableProfiling) {
+        await device.queue.onSubmittedWorkDone();
         const endTime = performance.now();
         const totalTime = endTime - startTime;
 
@@ -155,7 +152,6 @@ export class Executor {
       callback(encoder, device);
       const commandBuffer = encoder.finish();
       device.queue.submit([commandBuffer]);
-      await device.queue.onSubmittedWorkDone();
     } catch (error) {
       throw new GPUExecutionError(
         `Custom execution failed: ${error instanceof Error ? error.message : 'Unknown error'}`

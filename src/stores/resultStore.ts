@@ -91,22 +91,4 @@ export const resultStore = {
     setState('isProcessing', processing);
   },
 
-  /**
-   * Clear all results
-   */
-  clearResults() {
-    setState('results', new Map());
-    setState('errors', new Map());
-  },
-
-  /**
-   * Clear result for a specific shader
-   */
-  clearResult(shaderId: string) {
-    setState('results', (results) => {
-      const newResults = new Map(results);
-      newResults.delete(shaderId);
-      return newResults;
-    });
-  },
 };

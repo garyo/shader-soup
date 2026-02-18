@@ -172,15 +172,6 @@ export const evolutionStore = {
     });
   },
 
-  // Settings
-  setDefaultChildrenCount(count: number): void {
-    setState('defaultChildrenCount', count);
-  },
-
-  setDefaultTemperature(temp: number): void {
-    setState('defaultTemperature', temp);
-  },
-
   // Mashup methods
   getMashupResults(): ShaderDefinition[] {
     return state.mashupResults;

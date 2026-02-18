@@ -193,6 +193,7 @@ export const ShaderCard: Component<ShaderCardProps> = (props) => {
   // Sync state when browser exits fullscreen (e.g. user presses Escape natively)
   const handleFullscreenChange = () => {
     if (!document.fullscreenElement && isFullscreen()) {
+      savedElapsed = props.onAnimationStop(props.shader.id);
       setIsFullscreen(false);
       fullscreenRendererState.current = null;
     }
@@ -430,10 +431,6 @@ export const ShaderCard: Component<ShaderCardProps> = (props) => {
           ref={fullscreenOverlayRef}
           class="fullscreen-overlay"
           onClick={() => exitFullscreen()}
-          onMouseEnter={() => {
-            props.onAnimationStart(props.shader.id, { width: screen.width, height: screen.height }, savedElapsed);
-          }}
-          onMouseLeave={() => { savedElapsed = props.onAnimationStop(props.shader.id); }}
         >
           <div class="fullscreen-header">
             <h3>{props.shader.name}</h3>

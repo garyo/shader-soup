@@ -11,20 +11,16 @@ import { Executor } from '../engine/Executor';
 import { BufferManager } from '../engine/BufferManager';
 import { WebGPUContext } from '../engine/WebGPUContext';
 import { GPUPostProcessor } from '../engine/GPUPostProcessor';
-// CoordinateGenerator and ResultRenderer no longer needed - using GPU-only CanvasRenderer path
-import type { ShaderDefinition, ShaderParameter } from '@/types/core';
+import type { ShaderDefinition } from '@/types/core';
 import {
   createBatchMutationPrompt,
   createDebugPrompt,
-  createParameterNamingPrompt,
   createMashupPrompt,
   shaderObjectTool,
   debugShaderTool,
-  parameterNamesTool,
   renderShaderTool,
   type BatchMutationPromptParams,
   type DebugPromptParams,
-  type ParameterNamingPromptParams,
   type MashupPromptParams,
 } from './prompts';
 
@@ -78,7 +74,6 @@ export class ShaderEvolver {
   private pipelineBuilder: PipelineBuilder;
   private executor: Executor;
   private gpuPostProcessor: GPUPostProcessor;
-  // CoordinateGenerator and ResultRenderer removed - using GPU-only CanvasRenderer path
   private onProgress?: (update: ProgressUpdate) => void;
   private onChildCompleted?: (child: EvolutionResult, index: number, total: number) => void | Promise<void>;
   private experimentsPerChild: number;
@@ -109,7 +104,6 @@ export class ShaderEvolver {
     this.pipelineBuilder = new PipelineBuilder(webgpuContext);
     this.executor = new Executor(webgpuContext);
     this.gpuPostProcessor = new GPUPostProcessor(webgpuContext, compiler, bufferManager);
-    // CoordinateGenerator and ResultRenderer removed - using GPU-only CanvasRenderer path
 
     console.log(`ShaderEvolver initialized with ${this.memory.getEntryCount()} memory entries`);
   }
@@ -1176,95 +1170,4 @@ export class ShaderEvolver {
     }
   }
 
-  /**
-   * Update parameter names based on shader analysis
-   */
-  private async updateParameterNames(
-    shaderSource: string,
-    parameters: ShaderParameter[],
-    model: string
-  ): Promise<ShaderParameter[]> {
-    if (parameters.length === 0) {
-      return parameters;
-    }
-
-    try {
-      const promptParams: ParameterNamingPromptParams = {
-        shaderSource,
-        currentParams: parameters,
-      };
-
-      const prompt = createParameterNamingPrompt(promptParams);
-      console.log(`Updating parameter names for ${parameters.length} parameters`);
-
-      // Create messages array for conversation
-      const messages: Anthropic.MessageParam[] = [
-        {
-          role: 'user',
-          content: prompt,
-        },
-      ];
-
-      // Loop to handle tool calls
-      let newNames: string[] = [];
-      while (true) {
-        const startTime = performance.now();
-        const message = await this.anthropic.messages.create({
-          model: model,
-          max_tokens: 2048,
-          temperature: 0.3,
-          tools: [parameterNamesTool],
-          tool_choice: { type: "tool", name: "parameter_names_output" },
-          messages,
-        });
-        const elapsed = performance.now() - startTime;
-
-        // Log timing and token usage
-        console.log(`[LLM] Parameter naming call:`, {
-          model: model,
-          temperature: 0.3,
-          param_count: parameters.length,
-          elapsed_ms: elapsed.toFixed(0),
-          input_tokens: message.usage.input_tokens,
-          output_tokens: message.usage.output_tokens,
-          total_tokens: message.usage.input_tokens + message.usage.output_tokens,
-          stop_reason: message.stop_reason,
-        });
-
-        console.log(`Parameter naming: got response with stop_reason: ${message.stop_reason}`);
-
-        // Check if the model used the tool
-        if (message.stop_reason === 'tool_use') {
-          const toolUse = message.content.find(
-            (block): block is Anthropic.ToolUseBlock =>
-              block.type === 'tool_use' && block.name === 'parameter_names_output'
-          );
-
-          if (toolUse) {
-            console.log(`Parameter naming: tool used successfully, extracting names`);
-            const input = toolUse.input as { names: string[] };
-            newNames = input.names;
-            break;
-          }
-        }
-
-        // If we get here without finding the tool use, something went wrong
-        throw new Error(`Parameter naming: unexpected stop reason: ${message.stop_reason}`);
-      }
-
-      if (!Array.isArray(newNames) || newNames.length !== parameters.length) {
-        console.warn('Invalid parameter names from LLM, keeping original names');
-        return parameters;
-      }
-
-      // Update parameter names
-      return parameters.map((param, index) => ({
-        ...param,
-        name: newNames[index] || param.name,
-      }));
-    } catch (error) {
-      console.warn('Failed to update parameter names:', error);
-      return parameters; // Return original parameters on error
-    }
-  }
 }

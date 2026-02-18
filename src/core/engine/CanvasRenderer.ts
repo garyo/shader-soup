@@ -137,9 +137,8 @@ export class CanvasRenderer {
 
     renderPass.end();
 
-    // Submit and wait
+    // Submit (browser compositor handles canvas synchronization)
     device.queue.submit([encoder.finish()]);
-    await device.queue.onSubmittedWorkDone();
   }
 
   /**

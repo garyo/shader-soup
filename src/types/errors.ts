@@ -84,36 +84,3 @@ export class PipelineCreationError extends WebGPUEngineError {
   }
 }
 
-/**
- * Format error for display to users
- */
-export function formatError(error: unknown): string {
-  if (error instanceof ShaderCompilationError) {
-    const errorLines = error.errors
-      .map((e) => {
-        const location = e.line ? ` (line ${e.line}${e.column ? `:${e.column}` : ''})` : '';
-        return `  - ${e.message}${location}`;
-      })
-      .join('\n');
-
-    return `Shader Compilation Failed:\n${errorLines}`;
-  }
-
-  if (error instanceof BufferAllocationError) {
-    return `Buffer Allocation Failed: ${error.message}\nRequested size: ${error.requestedSize} bytes`;
-  }
-
-  if (error instanceof ParameterValidationError) {
-    return `Parameter Validation Failed: ${error.message}\nParameter: ${error.parameterName}`;
-  }
-
-  if (error instanceof WebGPUEngineError) {
-    return `${error.name}: ${error.message}`;
-  }
-
-  if (error instanceof Error) {
-    return error.message;
-  }
-
-  return String(error);
-}
