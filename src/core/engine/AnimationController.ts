@@ -58,7 +58,18 @@ export class AnimationController {
   }
 
   /**
+   * Get the elapsed animation time for a shader (seconds).
+   * Returns 0 if the shader is not animating.
+   */
+  getElapsedTime(shaderId: string): number {
+    const state = this.animations.get(shaderId);
+    if (!state) return 0;
+    return (performance.now() - state.startTime) / 1000.0;
+  }
+
+  /**
    * Start animating a shader with cached preparation result
+   * @param timeOffset - Optional time offset in seconds to resume from (preserves animation continuity)
    */
   startAnimation(
     shaderId: string,
@@ -66,6 +77,7 @@ export class AnimationController {
     superDimensions: { width: number; height: number },
     displayDimensions: { width: number; height: number },
     globalParams: { gamma: number; contrast: number },
+    timeOffset: number = 0,
   ): void {
     // Stop any existing animation for this shader (also cleans up feedback textures)
     this.stopAnimation(shaderId);
@@ -102,7 +114,7 @@ export class AnimationController {
       prep,
       shaderId,
       rafId: 0,
-      startTime: performance.now(),
+      startTime: performance.now() - timeOffset * 1000,
       frameCount: 0,
       superDimensions,
       displayDimensions,
@@ -139,12 +151,14 @@ export class AnimationController {
       cancelAnimationFrame(state.rafId);
       this.animations.delete(shaderId);
     }
-    // Clean up persistent feedback textures
+    // Defer feedback texture cleanup — an in-flight renderFrame may still
+    // reference the texture. Schedule destruction after the GPU queue drains.
     const feedbackTexture = this.feedbackTextures.get(shaderId);
     if (feedbackTexture) {
-      feedbackTexture.destroy();
       this.feedbackTextures.delete(shaderId);
       this.feedbackSamplers.delete(shaderId);
+      const device = this.context.getDevice();
+      device.queue.onSubmittedWorkDone().then(() => feedbackTexture.destroy());
     }
   }
 
@@ -180,6 +194,41 @@ export class AnimationController {
     device.queue.writeBuffer(state.prep.dimensionsBuffer, 16, new Float32Array([globalParams.panX, globalParams.panY]));
     // Update post-processing params
     state.globalParams = { gamma: globalParams.gamma, contrast: globalParams.contrast };
+  }
+
+  /**
+   * Reset animation time to 0 and clear feedback texture to black.
+   */
+  resetAnimation(shaderId: string): void {
+    const state = this.animations.get(shaderId);
+    if (!state) return;
+
+    // Reset time
+    state.startTime = performance.now();
+    state.frameCount = 0;
+
+    // Clear feedback texture to black
+    const feedbackTexture = this.feedbackTextures.get(shaderId);
+    if (feedbackTexture) {
+      const device = this.context.getDevice();
+      const { width, height } = state.superDimensions;
+      const zeroData = new Float32Array(width * height * 4);
+      device.queue.writeTexture(
+        { texture: feedbackTexture },
+        zeroData,
+        { bytesPerRow: width * 16 },
+        [width, height]
+      );
+    }
+  }
+
+  /**
+   * Reset all running animations.
+   */
+  resetAll(): void {
+    for (const shaderId of this.animations.keys()) {
+      this.resetAnimation(shaderId);
+    }
   }
 
   /**
@@ -240,13 +289,16 @@ export class AnimationController {
           feedbackTexture, // seed from previous frame's output
         );
         // Copy final output back to persistent feedback texture for next frame
-        const copyEncoder = device.createCommandEncoder({ label: 'feedback-persist-copy' });
-        copyEncoder.copyTextureToTexture(
-          { texture: prep.outputTexture },
-          { texture: feedbackTexture },
-          [superDimensions.width, superDimensions.height]
-        );
-        device.queue.submit([copyEncoder.finish()]);
+        // Guard: skip if animation was stopped mid-render (texture may be pending destroy)
+        if (this.feedbackTextures.has(shaderId)) {
+          const copyEncoder = device.createCommandEncoder({ label: 'feedback-persist-copy' });
+          copyEncoder.copyTextureToTexture(
+            { texture: prep.outputTexture },
+            { texture: feedbackTexture },
+            [superDimensions.width, superDimensions.height]
+          );
+          device.queue.submit([copyEncoder.finish()]);
+        }
       } else if (prep.hasInputTexture && feedbackTexture && feedbackSampler) {
         // Case B: prevFrame only (no iterations) — bind persistent texture directly
         const bindGroup = this.pipelineBuilder.createStandardBindGroup(
@@ -262,13 +314,15 @@ export class AnimationController {
         );
         await this.executor.execute(executionContext);
         // Copy output back to persistent feedback texture for next frame
-        const copyEncoder = device.createCommandEncoder({ label: 'feedback-persist-copy' });
-        copyEncoder.copyTextureToTexture(
-          { texture: prep.outputTexture },
-          { texture: feedbackTexture },
-          [superDimensions.width, superDimensions.height]
-        );
-        device.queue.submit([copyEncoder.finish()]);
+        if (this.feedbackTextures.has(shaderId)) {
+          const copyEncoder = device.createCommandEncoder({ label: 'feedback-persist-copy' });
+          copyEncoder.copyTextureToTexture(
+            { texture: prep.outputTexture },
+            { texture: feedbackTexture },
+            [superDimensions.width, superDimensions.height]
+          );
+          device.queue.submit([copyEncoder.finish()]);
+        }
       } else if (prep.hasIterations) {
         // Case C: iterations only (no prevFrame) — existing behavior
         await executeFeedbackLoop(

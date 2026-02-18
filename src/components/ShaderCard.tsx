@@ -2,7 +2,7 @@
  * Shader Card - Display shader result with parameter controls
  */
 
-import { type Component, createEffect, For, Show, createSignal } from 'solid-js';
+import { type Component, createEffect, For, Show, createSignal, onCleanup } from 'solid-js';
 import { ParameterSlider } from './ParameterSlider';
 import { IterationSlider } from './IterationSlider';
 import { GlobalParametersComponent } from './GlobalParameters';
@@ -11,7 +11,7 @@ import { EvolutionStatus } from './EvolutionStatus';
 import { ChildrenGrid } from './ChildrenGrid';
 import { ShaderCodeModal } from './ShaderCodeModal';
 import { ChangelogModal } from './ChangelogModal';
-import type { ShaderDefinition, ShaderResult } from '@/types/core';
+import type { ShaderDefinition, ShaderResult, Dimensions } from '@/types/core';
 import { shaderStore, evolutionStore } from '@/stores';
 import type { GlobalParameters } from '@/stores/shaderStore';
 
@@ -33,17 +33,22 @@ interface ShaderCardProps {
   onRenderPreview: (shader: ShaderDefinition, size: number) => Promise<ImageData | null>;
   onShaderEdit: (shaderId: string, newSource: string) => Promise<{ success: boolean; error?: string }>;
   onShaderCompile: (source: string) => Promise<{ success: boolean; errors?: Array<{ message: string; line?: number; column?: number }> }>;
-  onAnimationStart: (shaderId: string) => void;
-  onAnimationStop: (shaderId: string) => void;
+  onAnimationStart: (shaderId: string, overrideDimensions?: Dimensions, timeOffset?: number) => void;
+  onAnimationStop: (shaderId: string) => number;
 }
 
 export const ShaderCard: Component<ShaderCardProps> = (props) => {
   let canvasRef: HTMLCanvasElement | undefined;
+  let fullscreenCanvasRef: HTMLCanvasElement | undefined;
+  let fullscreenOverlayRef: HTMLDivElement | undefined;
   const [showCodeModal, setShowCodeModal] = createSignal(false);
   const [showChangelogModal, setShowChangelogModal] = createSignal(false);
+  const [isFullscreen, setIsFullscreen] = createSignal(false);
+  const [isHovered, setIsHovered] = createSignal(false);
 
   // Persistent canvas renderer - survives re-renders (store outside reactive scope)
   const rendererState: { current: any | null } = { current: null };
+  const fullscreenRendererState: { current: any | null } = { current: null };
 
   // Draw result to canvas when it changes
   createEffect(async () => {
@@ -101,6 +106,118 @@ export const ShaderCard: Component<ShaderCardProps> = (props) => {
     }
   });
 
+  // Draw result to fullscreen canvas when fullscreen is active
+  createEffect(async () => {
+    if (!isFullscreen() || !props.result || !fullscreenCanvasRef) return;
+
+    const displayWidth = fullscreenCanvasRef.clientWidth;
+    const displayHeight = fullscreenCanvasRef.clientHeight;
+    const dpr = window.devicePixelRatio || 1;
+
+    if (displayWidth > 0 && displayHeight > 0) {
+      const physicalWidth = Math.floor(displayWidth * dpr);
+      const physicalHeight = Math.floor(displayHeight * dpr);
+
+      if (fullscreenCanvasRef.width !== physicalWidth || fullscreenCanvasRef.height !== physicalHeight) {
+        fullscreenCanvasRef.width = physicalWidth;
+        fullscreenCanvasRef.height = physicalHeight;
+        fullscreenRendererState.current = null; // Reset renderer on resize
+      }
+
+      if (props.result.gpuTexture) {
+        try {
+          if (!fullscreenRendererState.current) {
+            const { getWebGPUContext } = await import('@/core/engine/WebGPUContext');
+            const { CanvasRenderer } = await import('@/core/engine/CanvasRenderer');
+            const context = await getWebGPUContext();
+            fullscreenRendererState.current = new CanvasRenderer(context);
+            fullscreenRendererState.current.configureCanvas(fullscreenCanvasRef);
+          }
+          await fullscreenRendererState.current.renderToCanvas(props.result.gpuTexture);
+          return;
+        } catch (err) {
+          console.warn('Fullscreen WebGPU rendering failed, falling back to 2D:', err);
+          fullscreenRendererState.current = null;
+        }
+      }
+
+      if (props.result.imageData) {
+        const ctx = fullscreenCanvasRef.getContext('2d');
+        if (ctx) {
+          ctx.putImageData(props.result.imageData, 0, 0);
+        }
+      }
+    }
+  });
+
+  // Saved elapsed time to preserve animation continuity across fullscreen transitions
+  let savedElapsed = 0;
+
+  const startFullscreenAnimation = () => {
+    // Use screen dimensions — stable during browser fullscreen transition animation
+    const w = screen.width;
+    const h = screen.height;
+    props.onAnimationStart(props.shader.id, { width: w, height: h }, savedElapsed);
+  };
+
+  const exitFullscreen = () => {
+    savedElapsed = props.onAnimationStop(props.shader.id);
+    setIsFullscreen(false);
+    fullscreenRendererState.current = null;
+    // Exit browser fullscreen if active
+    if (document.fullscreenElement) {
+      document.exitFullscreen();
+    }
+  };
+
+  const enterFullscreen = () => {
+    // Stop animation immediately so no more frames render at the old dimensions
+    savedElapsed = props.onAnimationStop(props.shader.id);
+    setIsFullscreen(true);
+    // Defer until the overlay is mounted, then request browser fullscreen
+    requestAnimationFrame(() => {
+      if (fullscreenOverlayRef) {
+        fullscreenOverlayRef.requestFullscreen().then(() => {
+          // Start animation at fullscreen dimensions
+          requestAnimationFrame(() => startFullscreenAnimation());
+        }).catch(() => {
+          // Fullscreen denied — still show the overlay, just not browser-fullscreen
+          startFullscreenAnimation();
+        });
+      } else {
+        startFullscreenAnimation();
+      }
+    });
+  };
+
+  // Sync state when browser exits fullscreen (e.g. user presses Escape natively)
+  const handleFullscreenChange = () => {
+    if (!document.fullscreenElement && isFullscreen()) {
+      setIsFullscreen(false);
+      fullscreenRendererState.current = null;
+    }
+  };
+  document.addEventListener('fullscreenchange', handleFullscreenChange);
+  onCleanup(() => document.removeEventListener('fullscreenchange', handleFullscreenChange));
+
+  // Keyboard handler for fullscreen toggle
+  const handleKeyDown = (e: KeyboardEvent) => {
+    if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) return;
+    if (e.key === 'f' || e.key === 'F') {
+      if (isFullscreen()) {
+        exitFullscreen();
+      } else if (isHovered()) {
+        enterFullscreen();
+      }
+    }
+    // Don't handle Escape — the browser fullscreen API handles it and
+    // fullscreenchange event syncs our state
+  };
+
+  // Register keyboard listener on mount
+  window.addEventListener('keydown', handleKeyDown);
+  onCleanup(() => window.removeEventListener('keydown', handleKeyDown));
+
   const paramValues = () => shaderStore.getParameterValues(props.shader.id) || new Map();
   const evolutionProgress = () => evolutionStore.getProgress(props.shader.id);
   const children = () => evolutionStore.getChildren(props.shader.id);
@@ -109,8 +226,8 @@ export const ShaderCard: Component<ShaderCardProps> = (props) => {
   return (
     <div
       class="shader-card"
-      onMouseEnter={() => props.onAnimationStart(props.shader.id)}
-      onMouseLeave={() => props.onAnimationStop(props.shader.id)}
+      onMouseEnter={() => { setIsHovered(true); if (!isFullscreen()) props.onAnimationStart(props.shader.id); }}
+      onMouseLeave={() => { setIsHovered(false); if (!isFullscreen()) props.onAnimationStop(props.shader.id); }}
     >
       <div class="shader-header">
         <div class="shader-header-left">
@@ -305,6 +422,28 @@ export const ShaderCard: Component<ShaderCardProps> = (props) => {
           changelog={props.shader.changelog!}
           onClose={() => setShowChangelogModal(false)}
         />
+      </Show>
+
+      {/* Fullscreen Overlay */}
+      <Show when={isFullscreen()}>
+        <div
+          ref={fullscreenOverlayRef}
+          class="fullscreen-overlay"
+          onClick={() => exitFullscreen()}
+          onMouseEnter={() => {
+            props.onAnimationStart(props.shader.id, { width: screen.width, height: screen.height }, savedElapsed);
+          }}
+          onMouseLeave={() => { savedElapsed = props.onAnimationStop(props.shader.id); }}
+        >
+          <div class="fullscreen-header">
+            <h3>{props.shader.name}</h3>
+            <span class="fullscreen-hint">Press F or Escape to exit</span>
+          </div>
+          <canvas
+            ref={fullscreenCanvasRef}
+            class="fullscreen-canvas"
+          />
+        </div>
       </Show>
     </div>
   );

@@ -33,7 +33,7 @@ fn hash21(p: vec2f) -> f32 {
     // Mix the two values - this is critical for quality
     let n = ix ^ (iy * 0x1b873593u);
     
-    return f32(hash_u32(n)) / 4294967296.0;
+    return f32(hash_u32(n)) * (1.0 / 4294967296.0);
 }
 
 // Hash 2D position to vec2 in [0, 1]
@@ -46,8 +46,8 @@ fn hash22(p: vec2f) -> vec2f {
     let h2 = hash_u32(iy ^ (ix * 0x85ebca6bu));
     
     return vec2f(
-        f32(h1) / 4294967296.0,
-        f32(h2) / 4294967296.0
+        f32(h1) * (1.0 / 4294967296.0),
+        f32(h2) * (1.0 / 4294967296.0)
     );
 }
 

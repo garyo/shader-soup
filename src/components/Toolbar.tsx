@@ -40,7 +40,7 @@ export const Toolbar: Component<ToolbarProps> = (props) => {
           onChange={handleModelChange}
         >
           <option value="claude-haiku-4-5">Haiku 4.5 (fast)</option>
-          <option value="claude-sonnet-4-5">Sonnet 4.5 (balanced)</option>
+          <option value="claude-sonnet-4-6">Sonnet 4.6 (balanced)</option>
           <option value="claude-opus-4-6">Opus 4.6 (best)</option>
         </select>
       </div>

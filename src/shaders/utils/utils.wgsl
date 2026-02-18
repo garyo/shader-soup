@@ -127,7 +127,7 @@ fn fast_log(x: f32) -> f32 {
 
 // uses hash_u32 from noise lib
 fn rand_f32(seed: u32) -> f32 {
-    return f32(hash_u32(seed)) / 4294967295.0;
+    return f32(hash_u32(seed)) * (1.0 / 4294967295.0);
 }
 
 // ---------------------------------------------------------------------------

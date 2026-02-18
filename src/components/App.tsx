@@ -2,7 +2,7 @@
  * Main App Component - Integrates WebGPU engine with UI
  */
 
-import { type Component, onMount, createSignal, Show } from 'solid-js';
+import { type Component, onMount, onCleanup, createSignal, Show } from 'solid-js';
 import { ShaderGrid } from './ShaderGrid';
 import { Toolbar } from './Toolbar';
 import { MashupToolbar } from './MashupToolbar';
@@ -60,7 +60,7 @@ export const App: Component = () => {
   const [webgpuReady, setWebgpuReady] = createSignal(false);
   const [error, setError] = createSignal<string | null>(null);
   const [temperature, setTemperature] = createSignal(0.9); // Default evolution temperature
-  const [model, setModel] = createSignal('claude-sonnet-4-5'); // Default model
+  const [model, setModel] = createSignal('claude-sonnet-4-6'); // Default model
   const [logs, setLogs] = createSignal<LogEntry[]>([]);
   const [logOverlayOpen, setLogOverlayOpen] = createSignal(false);
   const [mashupInProgress, setMashupInProgress] = createSignal(false);
@@ -230,6 +230,16 @@ export const App: Component = () => {
           }
         }
       }
+
+      // Keyboard shortcut: 'r' or '0' resets animation time and feedback to black
+      const handleKeyDown = (e: KeyboardEvent) => {
+        if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) return;
+        if (e.key === 'r' || e.key === '0') {
+          animationController.resetAll();
+        }
+      };
+      window.addEventListener('keydown', handleKeyDown);
+      onCleanup(() => window.removeEventListener('keydown', handleKeyDown));
 
       // Load example shaders
       loadExampleShaders();
@@ -575,7 +585,7 @@ export const App: Component = () => {
     }
   };
 
-  const handleAnimationStart = async (shaderId: string) => {
+  const handleAnimationStart = async (shaderId: string, overrideDimensions?: { width: number; height: number }, timeOffset?: number) => {
     if (animationController.isAnimating(shaderId)) return;
 
     // Find shader in main store, evolution children, or mashup results
@@ -593,7 +603,7 @@ export const App: Component = () => {
     if (!shader) return;
 
     try {
-      const dimensions = inputStore.outputDimensions;
+      const dimensions = overrideDimensions || inputStore.outputDimensions;
       const supersampleFactor = 3;
       const superDimensions = calculateSupersampledDimensions(dimensions, supersampleFactor);
       const globalParams = shaderStore.getGlobalParameters(shaderId);
@@ -626,14 +636,17 @@ export const App: Component = () => {
         superDimensions,
         dimensions,
         { gamma: globalParams.gamma, contrast: globalParams.contrast },
+        timeOffset ?? 0,
       );
     } catch (err) {
       console.error(`Failed to start animation for ${shaderId}:`, err);
     }
   };
 
-  const handleAnimationStop = (shaderId: string) => {
+  const handleAnimationStop = (shaderId: string): number => {
+    const elapsed = animationController.getElapsedTime(shaderId);
     animationController.stopAnimation(shaderId);
+    return elapsed;
   };
 
   const handleEvolve = async (shaderId: string) => {
