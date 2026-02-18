@@ -8,6 +8,7 @@ import { Toolbar } from './Toolbar';
 import { MashupToolbar } from './MashupToolbar';
 import { MashupResults } from './MashupResults';
 import { LogOverlay, type LogEntry } from './LogOverlay';
+import { ProfilingOverlay } from './ProfilingOverlay';
 import WebGPUCheck from './WebGPUCheck';
 import { shaderStore, inputStore, resultStore, evolutionStore } from '@/stores';
 import { getWebGPUContext, WebGPUContext } from '@/core/engine/WebGPUContext';
@@ -22,7 +23,7 @@ import { PostProcessor } from '@/core/output/PostProcessor';
 import { withGPUErrorScope } from '@/core/engine/GPUErrorHandler';
 import { executeFeedbackLoop } from '@/core/engine/FeedbackLoop';
 import { prepareShader } from '@/core/engine/ShaderPreparation';
-import { AnimationController } from '@/core/engine/AnimationController';
+import { AnimationController, type FrameProfile } from '@/core/engine/AnimationController';
 import { ShaderEvolver } from '@/core/llm';
 import type { ShaderDefinition } from '@/types/core';
 import { getErrorMessage, calculateSupersampledDimensions } from '@/utils/helpers';
@@ -61,6 +62,9 @@ export const App: Component = () => {
   const [logs, setLogs] = createSignal<LogEntry[]>([]);
   const [logOverlayOpen, setLogOverlayOpen] = createSignal(false);
   const [mashupInProgress, setMashupInProgress] = createSignal(false);
+  const [profilingVisible, setProfilingVisible] = createSignal(false);
+  const [profilingConsoleLog, setProfilingConsoleLog] = createSignal(false);
+  const [frameProfiles, setFrameProfiles] = createSignal<Map<string, FrameProfile>>(new Map());
 
   const maxLogEntries = 32;
   // Add log entry to the overlay (at the end of the list)
@@ -116,6 +120,20 @@ export const App: Component = () => {
             timestamp: new Date(),
             gpuTexture,
           });
+        },
+        (profile) => {
+          // Update profiling data
+          setFrameProfiles(prev => {
+            const next = new Map(prev);
+            next.set(profile.shaderId, profile);
+            return next;
+          });
+          // Console logging when enabled
+          if (profilingConsoleLog()) {
+            console.log(
+              `[Perf] "${profile.shaderName}" ${profile.totalFrameMs.toFixed(1)}ms (exec:${profile.shaderExecMs.toFixed(1)} copy:${profile.feedbackCopyMs.toFixed(1)} post:${profile.postProcessMs.toFixed(1)}) ${profile.superWidth}x${profile.superHeight} case-${profile.executionCase} iter:${profile.iterations}`
+            );
+          }
         },
       );
 
@@ -221,11 +239,18 @@ export const App: Component = () => {
         }
       }
 
-      // Keyboard shortcut: 'r' or '0' resets animation time and feedback to black
+      // Keyboard shortcuts
       const handleKeyDown = (e: KeyboardEvent) => {
         if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) return;
         if (e.key === 'r' || e.key === '0') {
           animationController.resetAll();
+        } else if (e.key === 'p') {
+          const newVisible = !profilingVisible();
+          setProfilingVisible(newVisible);
+          animationController.setProfilingEnabled(newVisible);
+          if (!newVisible) {
+            setFrameProfiles(new Map());
+          }
         }
       };
       window.addEventListener('keydown', handleKeyDown);
@@ -572,6 +597,7 @@ export const App: Component = () => {
         dimensions,
         { gamma: globalParams.gamma, contrast: globalParams.contrast },
         timeOffset ?? 0,
+        shader.name,
       );
     } catch (err) {
       console.error(`Failed to start animation for ${shaderId}:`, err);
@@ -1307,6 +1333,18 @@ export const App: Component = () => {
         onMashup={handleMashup}
         onClear={handleClearMashupSelection}
         isLoading={mashupInProgress()}
+      />
+
+      <ProfilingOverlay
+        profiles={frameProfiles()}
+        visible={profilingVisible()}
+        onClose={() => {
+          setProfilingVisible(false);
+          animationController.setProfilingEnabled(false);
+          setFrameProfiles(new Map());
+        }}
+        consoleLog={profilingConsoleLog()}
+        onConsoleLogToggle={() => setProfilingConsoleLog(!profilingConsoleLog())}
       />
 
       <LogOverlay

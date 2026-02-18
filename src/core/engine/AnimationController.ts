@@ -12,11 +12,27 @@ import { createExecutionContext } from './Executor';
 import { executeFeedbackLoop } from './FeedbackLoop';
 import { withGPUErrorScope } from './GPUErrorHandler';
 
+export interface FrameProfile {
+  shaderId: string;
+  shaderName: string;
+  frameNumber: number;
+  shaderExecMs: number;
+  feedbackCopyMs: number;
+  postProcessMs: number;
+  totalFrameMs: number;
+  iterations: number;
+  superWidth: number;
+  superHeight: number;
+  executionCase: 'A' | 'B' | 'C' | 'D';
+}
+
 export interface AnimationState {
   /** Cached preparation result */
   prep: ShaderPreparationResult;
   /** Shader ID */
   shaderId: string;
+  /** Shader display name */
+  shaderName: string;
   /** Animation frame request ID */
   rafId: number;
   /** Start time (performance.now()) */
@@ -45,6 +61,8 @@ export class AnimationController {
   private executor: Executor;
   private gpuPostProcessor: GPUPostProcessor;
   private onFrameRendered: OnFrameRendered;
+  private _onFrameProfile?: (profile: FrameProfile) => void;
+  profilingEnabled = false;
 
   constructor(
     context: WebGPUContext,
@@ -52,12 +70,18 @@ export class AnimationController {
     executor: Executor,
     gpuPostProcessor: GPUPostProcessor,
     onFrameRendered: OnFrameRendered,
+    onFrameProfile?: (profile: FrameProfile) => void,
   ) {
     this.context = context;
     this.pipelineBuilder = pipelineBuilder;
     this.executor = executor;
     this.gpuPostProcessor = gpuPostProcessor;
     this.onFrameRendered = onFrameRendered;
+    this._onFrameProfile = onFrameProfile;
+  }
+
+  setProfilingEnabled(enabled: boolean): void {
+    this.profilingEnabled = enabled;
   }
 
   /**
@@ -81,6 +105,7 @@ export class AnimationController {
     displayDimensions: { width: number; height: number },
     globalParams: { gamma: number; contrast: number },
     timeOffset: number = 0,
+    shaderName: string = '',
   ): void {
     // Stop any existing animation for this shader (also cleans up feedback textures)
     this.stopAnimation(shaderId);
@@ -119,6 +144,7 @@ export class AnimationController {
     const state: AnimationState = {
       prep,
       shaderId,
+      shaderName,
       rafId: 0,
       startTime: performance.now() - timeOffset * 1000,
       frameCount: 0,
@@ -256,6 +282,9 @@ export class AnimationController {
   private async renderFrame(state: AnimationState): Promise<void> {
     const { prep, shaderId, superDimensions } = state;
     const device = this.context.getDevice();
+    const profiling = this.profilingEnabled;
+
+    const frameStart = profiling ? performance.now() : 0;
 
     // Update time and frame in the dimensions buffer
     const elapsed = (performance.now() - state.startTime) / 1000.0; // seconds
@@ -273,9 +302,13 @@ export class AnimationController {
     const feedbackTexture = this.feedbackTextures.get(shaderId);
     const feedbackSampler = this.feedbackSamplers.get(shaderId);
 
+    let executionCase: 'A' | 'B' | 'C' | 'D' = 'D';
+    const execStart = profiling ? performance.now() : 0;
+
     await withGPUErrorScope(device, 'animation frame', async () => {
       if (prep.hasInputTexture && prep.hasIterations && feedbackTexture && feedbackSampler) {
         // Case A: prevFrame + iterations — run feedback loop seeded from persistent texture
+        executionCase = 'A';
         await executeFeedbackLoop(
           device,
           superDimensions,
@@ -298,19 +331,9 @@ export class AnimationController {
           },
           feedbackTexture, // seed from previous frame's output
         );
-        // Copy final output back to persistent feedback texture for next frame
-        // Guard: skip if animation was stopped mid-render (texture may be pending destroy)
-        if (this.feedbackTextures.has(shaderId)) {
-          const copyEncoder = device.createCommandEncoder({ label: 'feedback-persist-copy' });
-          copyEncoder.copyTextureToTexture(
-            { texture: prep.outputTexture },
-            { texture: feedbackTexture },
-            [superDimensions.width, superDimensions.height]
-          );
-          device.queue.submit([copyEncoder.finish()]);
-        }
       } else if (prep.hasInputTexture && feedbackTexture && feedbackSampler) {
         // Case B: prevFrame only (no iterations) — bind persistent texture directly
+        executionCase = 'B';
         const bindGroup = this.pipelineBuilder.createStandardBindGroup(
           prep.layout,
           prep.outputTexture,
@@ -323,18 +346,9 @@ export class AnimationController {
           prep.pipeline, bindGroup, prep.workgroups, prep.outputTexture,
         );
         await this.executor.execute(executionContext);
-        // Copy output back to persistent feedback texture for next frame
-        if (this.feedbackTextures.has(shaderId)) {
-          const copyEncoder = device.createCommandEncoder({ label: 'feedback-persist-copy' });
-          copyEncoder.copyTextureToTexture(
-            { texture: prep.outputTexture },
-            { texture: feedbackTexture },
-            [superDimensions.width, superDimensions.height]
-          );
-          device.queue.submit([copyEncoder.finish()]);
-        }
       } else if (prep.hasIterations) {
         // Case C: iterations only (no prevFrame) — existing behavior
+        executionCase = 'C';
         await executeFeedbackLoop(
           device,
           superDimensions,
@@ -358,6 +372,7 @@ export class AnimationController {
         );
       } else {
         // Case D: no prevFrame, no iterations — simple execution
+        executionCase = 'D';
         const bindGroup = this.pipelineBuilder.createStandardBindGroup(
           prep.layout,
           prep.outputTexture,
@@ -371,7 +386,23 @@ export class AnimationController {
       }
     });
 
+    const execEnd = profiling ? performance.now() : 0;
+
+    // Copy feedback texture (Cases A & B)
+    const copyStart = profiling ? performance.now() : 0;
+    if (prep.hasInputTexture && feedbackTexture && this.feedbackTextures.has(shaderId)) {
+      const copyEncoder = device.createCommandEncoder({ label: 'feedback-persist-copy' });
+      copyEncoder.copyTextureToTexture(
+        { texture: prep.outputTexture },
+        { texture: feedbackTexture },
+        [superDimensions.width, superDimensions.height]
+      );
+      device.queue.submit([copyEncoder.finish()]);
+    }
+    const copyEnd = profiling ? performance.now() : 0;
+
     // Post-process (gamma/contrast) on GPU
+    const postStart = profiling ? performance.now() : 0;
     const processed = await withGPUErrorScope(device, 'animation post-process', async () => {
       return await this.gpuPostProcessor.applyGammaContrast(
         shaderId,
@@ -381,8 +412,27 @@ export class AnimationController {
         state.globalParams.contrast,
       );
     });
+    const postEnd = profiling ? performance.now() : 0;
 
     // Notify that a new frame is ready
     this.onFrameRendered(shaderId, processed.displayTexture);
+
+    // Emit profiling data
+    if (profiling && this._onFrameProfile) {
+      const profile: FrameProfile = {
+        shaderId,
+        shaderName: state.shaderName,
+        frameNumber: state.frameCount,
+        shaderExecMs: execEnd - execStart,
+        feedbackCopyMs: copyEnd - copyStart,
+        postProcessMs: postEnd - postStart,
+        totalFrameMs: performance.now() - frameStart,
+        iterations: prep.iterations,
+        superWidth: superDimensions.width,
+        superHeight: superDimensions.height,
+        executionCase,
+      };
+      this._onFrameProfile(profile);
+    }
   }
 }
