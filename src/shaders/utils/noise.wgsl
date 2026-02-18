@@ -122,6 +122,71 @@ fn perlinNoise2(P: vec2f) -> f32 {
 }
 
 // =============================================================================
+// SIMPLEX NOISE (faster than Perlin — 3 corners vs 4, no fade curve)
+// =============================================================================
+
+// 2D Simplex noise — returns approximately [-1, 1]
+// ~30-40% faster than perlinNoise2 but can look slightly blobby,
+// so best used for displacement, warping, or indirect modulation
+// rather than directly visible patterns.
+fn simplexNoise2(p: vec2f) -> f32 {
+    let C = vec2f(0.211324865405187, 0.366025403784439); // (3-sqrt(3))/6, (sqrt(3)-1)/2
+    let D = vec3f(0.0, 0.5, 2.0) * 0.0 + vec3f(0.0, 0.5, 2.0); // helper
+
+    // Skew to simplex grid
+    var i = floor(p + dot(p, vec2f(C.y, C.y)));
+    let x0 = p - i + dot(i, vec2f(C.x, C.x));
+
+    // Which simplex triangle?
+    let i1 = select(vec2f(0.0, 1.0), vec2f(1.0, 0.0), x0.x > x0.y);
+
+    // Corners: x0 = x0, x1 = x0 - i1 + C.x, x2 = x0 - 1.0 + 2*C.x
+    let x1 = x0 - i1 + vec2f(C.x, C.x);
+    let x2 = x0 - 1.0 + 2.0 * vec2f(C.x, C.x);
+
+    // Wrap grid coords mod 289
+    i = i - floor(i / 289.0) * 289.0;
+
+    // Permutation for gradient indices
+    let p3 = permute4(vec4f(i.y, i.y + i1.y, i.y + 1.0, 0.0));
+    let pp = permute4(vec4f(p3.x + i.x, p3.y + i.x + i1.x, p3.z + i.x + 1.0, 0.0));
+
+    // Gradients from permutation
+    let gx0 = 2.0 * fract(pp.x * (1.0 / 41.0)) - 1.0;
+    let gy0 = abs(gx0) - 0.5;
+    let gx0c = gx0 - floor(gx0 + 0.5); // center
+
+    let gx1 = 2.0 * fract(pp.y * (1.0 / 41.0)) - 1.0;
+    let gy1 = abs(gx1) - 0.5;
+    let gx1c = gx1 - floor(gx1 + 0.5);
+
+    let gx2 = 2.0 * fract(pp.z * (1.0 / 41.0)) - 1.0;
+    let gy2 = abs(gx2) - 0.5;
+    let gx2c = gx2 - floor(gx2 + 0.5);
+
+    // Normalize gradients
+    let g0 = vec2f(gx0c, gy0) * inverseSqrt(gx0c * gx0c + gy0 * gy0);
+    let g1 = vec2f(gx1c, gy1) * inverseSqrt(gx1c * gx1c + gy1 * gy1);
+    let g2 = vec2f(gx2c, gy2) * inverseSqrt(gx2c * gx2c + gy2 * gy2);
+
+    // Radial falloff: (0.5 - |x|^2)^4
+    var n0: f32 = 0.0;
+    var t0 = 0.5 - dot(x0, x0);
+    if (t0 >= 0.0) { t0 *= t0; n0 = t0 * t0 * dot(g0, x0); }
+
+    var n1: f32 = 0.0;
+    var t1 = 0.5 - dot(x1, x1);
+    if (t1 >= 0.0) { t1 *= t1; n1 = t1 * t1 * dot(g1, x1); }
+
+    var n2: f32 = 0.0;
+    var t2 = 0.5 - dot(x2, x2);
+    if (t2 >= 0.0) { t2 *= t2; n2 = t2 * t2 * dot(g2, x2); }
+
+    // Scale to roughly [-1, 1]
+    return 70.0 * (n0 + n1 + n2);
+}
+
+// =============================================================================
 // FRACTAL NOISE (FBM - Fractional Brownian Motion)
 // =============================================================================
 
@@ -143,6 +208,25 @@ fn fbmPerlin(p: vec2f) -> f32 {
     pos = fbmRotation * pos * 2.01;
 
     f += 0.0625 * perlinNoise2(pos);
+
+    return f / 0.9375;
+}
+
+// FBM using simplex noise - 4 octaves (faster than fbmPerlin)
+fn fbmSimplex(p: vec2f) -> f32 {
+    var f: f32 = 0.0;
+    var pos = p;
+
+    f += 0.5000 * simplexNoise2(pos);
+    pos = fbmRotation * pos * 2.02;
+
+    f += 0.2500 * simplexNoise2(pos);
+    pos = fbmRotation * pos * 2.03;
+
+    f += 0.1250 * simplexNoise2(pos);
+    pos = fbmRotation * pos * 2.01;
+
+    f += 0.0625 * simplexNoise2(pos);
 
     return f / 0.9375;
 }

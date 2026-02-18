@@ -48,6 +48,9 @@ export interface AnimationState {
   /** Pre-allocated typed arrays for per-frame uniform writes */
   timeData: Float32Array;
   frameData: Uint32Array;
+  /** Adaptive supersample: track slow frames during the first second */
+  slowFrameCount: number;
+  slowFrameCheckDone: boolean;
 }
 
 export type OnFrameRendered = (shaderId: string, gpuTexture: GPUTexture) => void;
@@ -62,7 +65,15 @@ export class AnimationController {
   private gpuPostProcessor: GPUPostProcessor;
   private onFrameRendered: OnFrameRendered;
   private _onFrameProfile?: (profile: FrameProfile) => void;
+  private _onRequestDownsample?: (shaderId: string) => void;
   profilingEnabled = false;
+
+  /** Slow-frame threshold in ms */
+  private static readonly SLOW_FRAME_MS = 100;
+  /** How many slow frames before requesting downsample */
+  private static readonly SLOW_FRAME_TRIGGER = 3;
+  /** Stop checking after this many frames */
+  private static readonly SLOW_FRAME_CHECK_WINDOW = 30;
 
   constructor(
     context: WebGPUContext,
@@ -71,6 +82,7 @@ export class AnimationController {
     gpuPostProcessor: GPUPostProcessor,
     onFrameRendered: OnFrameRendered,
     onFrameProfile?: (profile: FrameProfile) => void,
+    onRequestDownsample?: (shaderId: string) => void,
   ) {
     this.context = context;
     this.pipelineBuilder = pipelineBuilder;
@@ -78,6 +90,7 @@ export class AnimationController {
     this.gpuPostProcessor = gpuPostProcessor;
     this.onFrameRendered = onFrameRendered;
     this._onFrameProfile = onFrameProfile;
+    this._onRequestDownsample = onRequestDownsample;
   }
 
   setProfilingEnabled(enabled: boolean): void {
@@ -153,6 +166,8 @@ export class AnimationController {
       globalParams,
       timeData: new Float32Array(1),
       frameData: new Uint32Array(1),
+      slowFrameCount: 0,
+      slowFrameCheckDone: false,
     };
 
     this.animations.set(shaderId, state);
@@ -284,7 +299,7 @@ export class AnimationController {
     const device = this.context.getDevice();
     const profiling = this.profilingEnabled;
 
-    const frameStart = profiling ? performance.now() : 0;
+    const frameStart = performance.now();
 
     // Update time and frame in the dimensions buffer
     const elapsed = (performance.now() - state.startTime) / 1000.0; // seconds
@@ -418,6 +433,7 @@ export class AnimationController {
     this.onFrameRendered(shaderId, processed.displayTexture);
 
     // Emit profiling data
+    const frameMs = performance.now() - frameStart;
     if (profiling && this._onFrameProfile) {
       const profile: FrameProfile = {
         shaderId,
@@ -426,13 +442,31 @@ export class AnimationController {
         shaderExecMs: execEnd - execStart,
         feedbackCopyMs: copyEnd - copyStart,
         postProcessMs: postEnd - postStart,
-        totalFrameMs: performance.now() - frameStart,
+        totalFrameMs: frameMs,
         iterations: prep.iterations,
         superWidth: superDimensions.width,
         superHeight: superDimensions.height,
         executionCase,
       };
       this._onFrameProfile(profile);
+    }
+
+    // Adaptive supersample: detect slow frames during early frames and request downsample
+    if (!state.slowFrameCheckDone && this._onRequestDownsample) {
+      if (state.frameCount <= AnimationController.SLOW_FRAME_CHECK_WINDOW) {
+        if (frameMs > AnimationController.SLOW_FRAME_MS) {
+          state.slowFrameCount++;
+        }
+        if (state.slowFrameCount >= AnimationController.SLOW_FRAME_TRIGGER) {
+          state.slowFrameCheckDone = true;
+          console.log(`[Perf] "${state.shaderName}" averaging ${frameMs.toFixed(0)}ms/frame at ${superDimensions.width}x${superDimensions.height} — requesting downsample`);
+          // Defer to next event loop turn so the animation loop's .then() completes first
+          const cb = this._onRequestDownsample;
+          setTimeout(() => cb(shaderId), 0);
+        }
+      } else {
+        state.slowFrameCheckDone = true;
+      }
     }
   }
 }

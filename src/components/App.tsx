@@ -75,6 +75,10 @@ export const App: Component = () => {
     });
   };
 
+  // Track fullscreen animations for adaptive supersampling
+  // Maps shaderId -> { display dimensions, current supersample factor }
+  const fullscreenAnimations = new Map<string, { dimensions: { width: number; height: number }; supersampleFactor: number }>();
+
   // WebGPU components
   let context: WebGPUContext;
   let compiler: ShaderCompiler;
@@ -134,6 +138,17 @@ export const App: Component = () => {
               `[Perf] "${profile.shaderName}" ${profile.totalFrameMs.toFixed(1)}ms (exec:${profile.shaderExecMs.toFixed(1)} copy:${profile.feedbackCopyMs.toFixed(1)} post:${profile.postProcessMs.toFixed(1)}) ${profile.superWidth}x${profile.superHeight} case-${profile.executionCase} iter:${profile.iterations}`
             );
           }
+        },
+        (shaderId) => {
+          // Adaptive supersample: restart slow fullscreen animations at lower supersample
+          const fsInfo = fullscreenAnimations.get(shaderId);
+          if (!fsInfo || fsInfo.supersampleFactor <= 1) return;
+          const newFactor = Math.max(1, fsInfo.supersampleFactor - 1);
+          const elapsed = animationController.getElapsedTime(shaderId);
+          animationController.stopAnimation(shaderId);
+          fsInfo.supersampleFactor = newFactor;
+          console.log(`[Perf] Restarting "${shaderId}" at ${newFactor}x supersample`);
+          handleAnimationStart(shaderId, fsInfo.dimensions, elapsed);
         },
       );
 
@@ -564,7 +579,19 @@ export const App: Component = () => {
 
     try {
       const dimensions = overrideDimensions || inputStore.outputDimensions;
-      const supersampleFactor = 3;
+      const isFullscreen = !!overrideDimensions;
+
+      // Use tracked supersample factor for fullscreen (may have been reduced), otherwise default 3x
+      let supersampleFactor = 3;
+      if (isFullscreen) {
+        const existing = fullscreenAnimations.get(shaderId);
+        if (existing) {
+          supersampleFactor = existing.supersampleFactor;
+        } else {
+          fullscreenAnimations.set(shaderId, { dimensions, supersampleFactor });
+        }
+      }
+
       const superDimensions = calculateSupersampledDimensions(dimensions, supersampleFactor);
       const globalParams = shaderStore.getGlobalParameters(shaderId);
 
@@ -607,6 +634,7 @@ export const App: Component = () => {
   const handleAnimationStop = (shaderId: string): number => {
     const elapsed = animationController.getElapsedTime(shaderId);
     animationController.stopAnimation(shaderId);
+    fullscreenAnimations.delete(shaderId);
     return elapsed;
   };
 

@@ -20,10 +20,12 @@ Hash Functions:
 Noise Functions:
 - valueNoise2(p: vec2f) -> f32 - Simple value noise [0,1]
 - perlinNoise2(p: vec2f) -> f32 - Classic Perlin noise (returns ~-1 to 1)
+- simplexNoise2(p: vec2f) -> f32 - Simplex noise (~-1 to 1), faster than Perlin but can look blobby — best for displacement/warping, not directly visible patterns
 - cellularNoise(p: vec2f) -> f32 - Voronoi-like cellular noise
 
 Fractal/Layered Noise (FBM - Fractional Brownian Motion):
 - fbmPerlin(p: vec2f) -> f32 - 4-octave Perlin FBM
+- fbmSimplex(p: vec2f) -> f32 - 4-octave simplex FBM (faster than fbmPerlin, but can look blobby)
 - fbmValue(p: vec2f) -> f32 - 4-octave value FBM
 - fbmPerlinCustom(p: vec2f, octaves: i32, lacunarity: f32, gain: f32) -> f32 - Customizable FBM
 
