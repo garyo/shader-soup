@@ -197,7 +197,10 @@ export class GPUPostProcessor {
 
     // Create filterable display texture with mipmaps at output resolution
     const displayPoolKey = `display-${shaderId}-${displayDimensions.width}x${displayDimensions.height}`;
-    const mipLevelCount = Math.floor(Math.log2(Math.max(displayDimensions.width, displayDimensions.height))) + 1;
+    // Cap at 4 mip levels (512→256→128→64) — enough for antialiased display,
+    // avoids excessive mipmap render passes on every animation frame
+    const fullMipCount = Math.floor(Math.log2(Math.max(displayDimensions.width, displayDimensions.height))) + 1;
+    const mipLevelCount = Math.min(fullMipCount, 4);
 
     let displayTexture = this.displayTexturePool.get(displayPoolKey);
 
