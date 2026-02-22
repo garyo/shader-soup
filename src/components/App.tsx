@@ -489,6 +489,7 @@ export const App: Component = () => {
           shaderId,
           outputTexture,
           superDimensions,
+          dimensions,
           globalParams.gamma,
           globalParams.contrast
         );
@@ -518,6 +519,10 @@ export const App: Component = () => {
       });
 
       resultStore.clearError(shaderId);
+
+      // Free the large storage texture now that display texture is populated.
+      // It will be recreated if the shader needs re-execution (param change, animation).
+      gpuPostProcessor.freeStorageTexture(shaderId);
     } catch (err) {
       const errorMessage = getErrorMessage(err);
       resultStore.setError(shaderId, errorMessage);

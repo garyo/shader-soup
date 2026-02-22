@@ -359,10 +359,12 @@ export class ShaderEvolver {
 
       // Use GPUPostProcessor to convert rgba32float → rgba16float (same as main display path)
       // gamma=1.0, contrast=1.0 means no color adjustment, just format conversion
+      const thumbDimensions = { width: size, height: size };
       const { displayTexture } = await this.gpuPostProcessor.applyGammaContrast(
         'thumbnail', // shaderId for texture pooling
         outputTexture,
-        { width: size, height: size },
+        thumbDimensions,
+        thumbDimensions,
         1.0, // gamma (1.0 = no change)
         1.0  // contrast (1.0 = no change)
       );

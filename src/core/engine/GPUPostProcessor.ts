@@ -135,15 +135,17 @@ export class GPUPostProcessor {
    * Apply gamma and contrast adjustments on GPU
    * @param shaderId - Shader ID for texture pooling
    * @param inputTexture - Input texture (rgba32float from compute shader)
-   * @param dimensions - Texture dimensions
+   * @param computeDimensions - Dimensions of the compute/storage texture (supersampled resolution)
+   * @param displayDimensions - Dimensions of the display texture (output resolution, may be smaller)
    * @param gamma - Gamma value (1.0 = no change)
    * @param contrast - Contrast value (1.0 = no change)
-   * @returns Object with storage texture (for ImageData) and display texture (for WebGPU rendering)
+   * @returns Object with storage texture and display texture (for WebGPU rendering)
    */
   public async applyGammaContrast(
     shaderId: string,
     inputTexture: GPUTexture,
-    dimensions: { width: number; height: number },
+    computeDimensions: { width: number; height: number },
+    displayDimensions: { width: number; height: number },
     gamma: number,
     contrast: number
   ): Promise<{ storageTexture: GPUTexture; displayTexture: GPUTexture }> {
@@ -154,13 +156,13 @@ export class GPUPostProcessor {
     const device = this.context.getDevice();
     const displayFormat = this.context.getDisplayStorageFormat();
 
-    // Get or create output texture from pool (prevents flashing during parameter changes)
-    const poolKey = `${shaderId}-${dimensions.width}x${dimensions.height}`;
+    // Get or create storage texture from pool at compute (supersampled) resolution
+    const poolKey = `${shaderId}-${computeDimensions.width}x${computeDimensions.height}`;
     let outputTexture = this.texturePool.get(poolKey);
 
     if (!outputTexture) {
       outputTexture = device.createTexture({
-        size: { width: dimensions.width, height: dimensions.height },
+        size: { width: computeDimensions.width, height: computeDimensions.height },
         format: displayFormat,
         usage: GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_SRC,
         label: `post-processed-output-${shaderId}`,
@@ -169,8 +171,8 @@ export class GPUPostProcessor {
     }
 
     // Update uniform buffers in-place (no allocation)
-    this.dimensionsData[0] = dimensions.width;
-    this.dimensionsData[1] = dimensions.height;
+    this.dimensionsData[0] = computeDimensions.width;
+    this.dimensionsData[1] = computeDimensions.height;
     device.queue.writeBuffer(this.dimensionsBuffer!, 0, this.dimensionsData);
 
     this.paramsData[0] = gamma;
@@ -178,7 +180,6 @@ export class GPUPostProcessor {
     device.queue.writeBuffer(this.paramsBuffer!, 0, this.paramsData);
 
     // Recreate bind group only when input/output textures change
-    // Compare actual texture object identity (not label) since different textures can share labels
     if (this.cachedInputTexture !== inputTexture || this.cachedOutputPoolKey !== poolKey) {
       this.cachedBindGroup = device.createBindGroup({
         label: 'gpu-post-processor-bind-group',
@@ -194,14 +195,16 @@ export class GPUPostProcessor {
       this.cachedOutputPoolKey = poolKey;
     }
 
-    // Create filterable display texture with mipmaps (for antialiased rendering)
-    const displayPoolKey = `display-${poolKey}`;
-    const mipLevelCount = 4;
+    // Create filterable display texture with mipmaps at output resolution
+    const displayPoolKey = `display-${shaderId}-${displayDimensions.width}x${displayDimensions.height}`;
+    const mipLevelCount = Math.floor(Math.log2(Math.max(displayDimensions.width, displayDimensions.height))) + 1;
 
     let displayTexture = this.displayTexturePool.get(displayPoolKey);
 
-    // Check if pooled texture has wrong mip count (from previous runs)
-    if (displayTexture && displayTexture.mipLevelCount !== mipLevelCount) {
+    // Check if pooled texture has wrong mip count or dimensions
+    if (displayTexture && (displayTexture.mipLevelCount !== mipLevelCount ||
+        displayTexture.width !== displayDimensions.width ||
+        displayTexture.height !== displayDimensions.height)) {
       displayTexture.destroy();
       this.displayTexturePool.delete(displayPoolKey);
       displayTexture = undefined;
@@ -209,7 +212,7 @@ export class GPUPostProcessor {
 
     if (!displayTexture) {
       displayTexture = device.createTexture({
-        size: { width: dimensions.width, height: dimensions.height },
+        size: { width: displayDimensions.width, height: displayDimensions.height },
         format: displayFormat,
         usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST | GPUTextureUsage.COPY_SRC | GPUTextureUsage.RENDER_ATTACHMENT,
         mipLevelCount,
@@ -218,36 +221,83 @@ export class GPUPostProcessor {
       this.displayTexturePool.set(displayPoolKey, displayTexture);
     }
 
-    // Batch all work into a single command encoder + submit:
-    // 1. Post-process compute dispatch
-    // 2. Copy storage texture to display texture (mip 0)
+    // Batch compute dispatch into a single command encoder
     const encoder = device.createCommandEncoder({ label: 'gpu-post-processor-batch' });
 
-    // 1. Post-process compute pass
+    // 1. Post-process compute pass (runs at compute/supersampled resolution)
     const pass = encoder.beginComputePass({ label: 'gpu-post-processor-pass' });
     pass.setPipeline(this.pipeline!);
     pass.setBindGroup(0, this.cachedBindGroup!);
-    const workgroupsX = Math.ceil(dimensions.width / 8);
-    const workgroupsY = Math.ceil(dimensions.height / 8);
+    const workgroupsX = Math.ceil(computeDimensions.width / 8);
+    const workgroupsY = Math.ceil(computeDimensions.height / 8);
     pass.dispatchWorkgroups(workgroupsX, workgroupsY);
     pass.end();
 
-    // 2. Copy to display texture (mip 0)
-    encoder.copyTextureToTexture(
-      { texture: outputTexture },
-      { texture: displayTexture, mipLevel: 0 },
-      { width: dimensions.width, height: dimensions.height }
-    );
+    // 2. Downsample storage texture → display texture mip 0
+    if (computeDimensions.width === displayDimensions.width &&
+        computeDimensions.height === displayDimensions.height) {
+      // Same size: simple copy
+      encoder.copyTextureToTexture(
+        { texture: outputTexture },
+        { texture: displayTexture, mipLevel: 0 },
+        { width: displayDimensions.width, height: displayDimensions.height }
+      );
+      device.queue.submit([encoder.finish()]);
+    } else {
+      // Different sizes: submit compute first, then downsample via render pass with linear filtering
+      device.queue.submit([encoder.finish()]);
+      this.downsampleToDisplay(device, outputTexture, displayTexture);
+    }
 
-    device.queue.submit([encoder.finish()]);
-
-    // 3. Generate mipmaps (single submit internally)
+    // 3. Generate mipmaps from mip 0 (single submit internally)
     this.generateMipmaps(device, displayTexture);
 
     return {
       storageTexture: outputTexture,
       displayTexture: displayTexture,
     };
+  }
+
+  /**
+   * Downsample a source texture into the mip 0 of a (smaller) destination texture
+   * using a render pass with linear filtering.
+   */
+  private downsampleToDisplay(
+    device: GPUDevice,
+    source: GPUTexture,
+    dest: GPUTexture
+  ): void {
+    if (!this.mipmapPipeline) {
+      this.initMipmapPipeline();
+      return;
+    }
+
+    const bindGroup = device.createBindGroup({
+      label: 'downsample-to-display',
+      layout: this.mipmapPipeline.getBindGroupLayout(0),
+      entries: [
+        { binding: 0, resource: source.createView({ baseMipLevel: 0, mipLevelCount: 1 }) },
+        { binding: 1, resource: this.mipmapSampler! },
+      ],
+    });
+
+    const encoder = device.createCommandEncoder({ label: 'downsample-to-display' });
+    const renderPass = encoder.beginRenderPass({
+      label: 'downsample-to-display-pass',
+      colorAttachments: [{
+        view: dest.createView({ baseMipLevel: 0, mipLevelCount: 1 }),
+        loadOp: 'clear',
+        storeOp: 'store',
+        clearValue: { r: 0, g: 0, b: 0, a: 1 },
+      }],
+    });
+
+    renderPass.setPipeline(this.mipmapPipeline);
+    renderPass.setBindGroup(0, bindGroup);
+    renderPass.draw(3);
+    renderPass.end();
+
+    device.queue.submit([encoder.finish()]);
   }
 
   /**
@@ -338,6 +388,25 @@ export class GPUPostProcessor {
     }
 
     device.queue.submit([encoder.finish()]);
+  }
+
+  /**
+   * Free storage texture for a shader (call after static render completes to save memory).
+   * The storage texture will be recreated if the shader needs re-execution.
+   */
+  public freeStorageTexture(shaderId: string): void {
+    for (const [key, texture] of this.texturePool.entries()) {
+      if (key.startsWith(`${shaderId}-`)) {
+        texture.destroy();
+        this.texturePool.delete(key);
+      }
+    }
+    // Invalidate cached bind group if it referenced this shader's textures
+    if (this.cachedOutputPoolKey.startsWith(`${shaderId}-`)) {
+      this.cachedBindGroup = null;
+      this.cachedInputTexture = null;
+      this.cachedOutputPoolKey = '';
+    }
   }
 
   /**

@@ -429,6 +429,7 @@ export class AnimationController {
         shaderId,
         prep.outputTexture,
         superDimensions,
+        state.displayDimensions,
         state.globalParams.gamma,
         state.globalParams.contrast,
       );
