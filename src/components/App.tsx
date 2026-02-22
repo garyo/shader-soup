@@ -65,7 +65,7 @@ export const App: Component = () => {
   const storedModel = localStorage.getItem('evolve-model');
   const parsedTemp = storedTemp ? parseFloat(storedTemp) : NaN;
   const [temperature, _setTemperature] = createSignal(
-    Number.isFinite(parsedTemp) && parsedTemp >= 0 && parsedTemp <= 2 ? parsedTemp : 0.9
+    Number.isFinite(parsedTemp) && parsedTemp >= 0 && parsedTemp <= 1 ? parsedTemp : 0.9
   );
   const VALID_MODELS = ['claude-haiku-4-5', 'claude-sonnet-4-6', 'claude-opus-4-6'];
   const DEFAULT_MODEL = 'claude-haiku-4-5';

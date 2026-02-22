@@ -97,8 +97,8 @@ export const EvolveOptionsModal: Component<EvolveOptionsModalProps> = (props) =>
                 type="range"
                 class="slider"
                 min="0"
-                max="2"
-                step="0.05"
+                max="1"
+                step="0.01"
                 value={temp()}
                 onInput={(e) => setTemp(parseFloat(e.currentTarget.value))}
               />
