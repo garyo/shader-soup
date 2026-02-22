@@ -3,5 +3,6 @@
  */
 
 export { ShaderEvolver } from './ShaderEvolver';
-export type { EvolutionOptions, EvolutionResult } from './ShaderEvolver';
+export type { EvolutionOptions, EvolutionResult, TokenUsage } from './ShaderEvolver';
+export { formatTokenCount } from './ShaderEvolver';
 export * from './prompts';

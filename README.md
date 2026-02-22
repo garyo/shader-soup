@@ -1,24 +1,46 @@
 # Shader Soup
 
-A WebGPU-based shader evolution platform for generative image processing and creation.
+Can AIs be creative? An investigation using AI-based WebGPU shader generation
 
 ## Overview
 
-Shader Soup is a web application that enables the execution and visualization of WebGPU compute shaders for image generation and processing. The application provides a framework for running arbitrary compute shaders with inputs of optional 2D images and normalized XY coordinates, displaying results from multiple shaders simultaneously.
+Shader Soup is an investigation into AI creativity. I wanted to give it the bare minimum of tools and see what it could come up with on its own, using prompts that push it to be creative and think out of the box.
 
-### Current Features
+It starts with this prompt: "You are a highly creative WebGPU shader developer. Your goal is to create something new, unique and beautiful by evolving the input shaders, adding your own ideas, refactoring and modifying according to the temperature. Think about symmetry, color, texture, light and shadow."
 
-- **WebGPU Compute Shader Execution**: Run custom WGSL (WebGPU Shading Language) shaders
-- **Flexible Input System**: Support for optional 2D image inputs and normalized coordinate spaces
-- **Multi-Shader Visualization**: Display results from N shaders simultaneously
-- **Real-time Processing**: GPU-accelerated image generation and processing
-- **Shader Parameters**: Define adjustable parameters (uniforms) with interactive sliders for real-time control
+The framework gives each shader the current time, a set of `uv` (x/y) coordinates, current parameter values, and the previous frame (a texture) as inputs. The evolver produces new shaders, along with parameter definitions and default values and names. There's a small set of built-in primitives (see below). Anything else, the agent can invent for itself — which it often does. 
 
-### Planned Features (Future)
+The UI lets you evolve "children" from any shader, or mash-up multiple shaders to produce offspring. Mousing over a shader runs it in real time. Pressing F enters full-screen mode. You can also adjust param values and global params like pan/zoom and color (gamma and contrast). You can also hand-edit the generated source code for any shader in the syntax-checking editor. (Surprisingly (to me anyway), the LLM often comments its code!) You can download high-res still images, and export the shaders for use elsewhere. (Downloading movies is planned, but not available yet.)
 
-- **LLM-Driven Evolution**: Automated shader mutation and evolution using language models
-- **Fitness Selection**: User-driven selection mechanism for preferred outputs
-- **Genetic Algorithm**: Evolve shaders based on user preferences
+To use this app, you need an Anthropic API key, which you can get at https://console.anthropic.com/settings/keys. In my experiments, evolving with Haiku (fastest and cheapest) costs around $0.10-0.20 for 6 children, Sonnet 4.6 costs $0.75-0.85, and Opus 4.6 (by far the best, but also most expensive) costs around $5 for 6 children, or $3.50 for a mashup with 4 children, so be careful with Opus especially! The app reports the cost for each operation as it goes; check the Evolution Log at the bottom. Unfortunately Anthropic does not allow use of your Claude subscription; you need a separate API key that gets charged per million tokens.
+
+### Built-in Shader Library                                                                             
+                                                                                                      
+All user shaders automatically have access to ~60 utility functions from two WGSL libraries
+(noise.wgsl and utils.wgsl), as well as all the standard WebGPU functions.
+                                                                                                      
+####  Noise & Procedural Generation                                                                       
+  - Hash functions (`pcg`, `hash21`, `hash22`) for deterministic pseudo-randomness
+  - Value noise, classic Perlin noise, and simplex noise (2D)
+  - Multi-octave fractal noise  (`fbmPerlin`, `fbmSimplex`,  `fbmValue`, `fbmPerlinCustom`)
+  - Specialized patterns: `turbulence`, `ridgeNoise`, `cellularNoise` (Voronoi), and `domainWarp`
+
+####  Math & Color
+  - Math: `saturate`, `remap`, `lerp`, `wrap`, `repeat`, `pingpong`, `smooth_min/max`
+  - Fast approximations for exp, log, and inverse square root
+  - Color space conversions for hsv/rgb/linear
+
+####  Geometry & SDFs
+  - 2D signed distance functions for polygons: triangle, pentagon, hexagon, octagon, star, pentagram,
+  hexagram
+  - `radialSymmetry` for N-way rotational symmetry with optional mirroring
+  - `hexGrid` for hexagonal tiling coordinates
+
+####  Compositing & Coordinates
+  - Screen blend mode (`screen`, `screen_color`)
+  - `get_uv` for normalized coordinates with zoom/pan support and aspect-ratio correction
+  - Matrix helpers (`orthonormal_basis`, `outer`, `mul_point`, `mul_vector`)
+
 
 ## Tech Stack
 

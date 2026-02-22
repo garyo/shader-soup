@@ -7,3 +7,4 @@ export { inputStore } from './inputStore';
 export { resultStore } from './resultStore';
 export { evolutionStore } from './evolutionStore';
 export type { EvolutionStatus, EvolutionProgress } from './evolutionStore';
+export { apiKey, setApiKey } from './apiKeyStore';

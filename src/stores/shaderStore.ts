@@ -332,10 +332,10 @@ export const shaderStore = {
       state.activeShaders.has(shader.id)
     );
 
-    // Examples (non-promoted) first in original order, then generated (promoted) by creation time
+    // Examples (non-promoted) in original order, then generated (promoted) newest first
     const examples = active.filter(s => !state.promotedShaderIds.has(s.id));
     const generated = active.filter(s => state.promotedShaderIds.has(s.id));
-    generated.sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime());
+    generated.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
 
     return [...examples, ...generated];
   },

@@ -2,7 +2,7 @@
  * Log Overlay - Displays evolution process logs
  */
 
-import { type Component, For, onMount, onCleanup } from 'solid-js';
+import { type Component, For, createSignal, createEffect, on, onMount, onCleanup } from 'solid-js';
 
 export interface LogEntry {
   timestamp: Date;
@@ -18,22 +18,46 @@ interface LogOverlayProps {
 
 export const LogOverlay: Component<LogOverlayProps> = (props) => {
   let logContainerRef: HTMLDivElement | undefined;
+  const [userScrolledBack, setUserScrolledBack] = createSignal(false);
 
-  // Auto-scroll to bottom when new logs appear
+  const isNearBottom = () => {
+    if (!logContainerRef) return true;
+    const threshold = 30;
+    return logContainerRef.scrollTop + logContainerRef.clientHeight >= logContainerRef.scrollHeight - threshold;
+  };
+
   const scrollToBottom = () => {
     if (logContainerRef) {
       logContainerRef.scrollTop = logContainerRef.scrollHeight;
     }
   };
 
-  // Watch for new logs and scroll
+  // Auto-scroll when new logs appear (unless user scrolled back)
   onMount(() => {
-    const observer = new MutationObserver(scrollToBottom);
+    const observer = new MutationObserver(() => {
+      if (!userScrolledBack()) {
+        scrollToBottom();
+      }
+    });
     if (logContainerRef) {
       observer.observe(logContainerRef, { childList: true, subtree: true });
     }
     onCleanup(() => observer.disconnect());
   });
+
+  // Auto-scroll to bottom when overlay is opened
+  createEffect(on(() => props.isOpen, (isOpen) => {
+    if (isOpen) {
+      setUserScrolledBack(false);
+      // Use requestAnimationFrame to ensure DOM is laid out
+      requestAnimationFrame(() => scrollToBottom());
+    }
+  }));
+
+  const handleScroll = () => {
+    if (!logContainerRef) return;
+    setUserScrolledBack(!isNearBottom());
+  };
 
   const formatTime = (date: Date) => {
     return date.toLocaleTimeString('en-US', {
@@ -53,11 +77,11 @@ export const LogOverlay: Component<LogOverlayProps> = (props) => {
           <span class="log-overlay-count">({props.logs.length} entries)</span>
         </div>
         <div class="log-overlay-toggle">
-          {props.isOpen ? '▼' : '▲'}
+          {props.isOpen ? '\u25BC' : '\u25B2'}
         </div>
       </div>
 
-      <div class="log-overlay-content" ref={logContainerRef}>
+      <div class="log-overlay-content" ref={logContainerRef} onScroll={handleScroll}>
         <For each={props.logs}>
           {(log) => (
             <div class={`log-entry log-entry-${log.type}`}>

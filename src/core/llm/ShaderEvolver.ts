@@ -24,6 +24,14 @@ import {
   type MashupPromptParams,
 } from './prompts';
 
+export interface TokenUsage {
+  inputTokens: number;
+  outputTokens: number;
+  cacheCreationTokens: number;
+  cacheReadTokens: number;
+  apiCalls: number;
+}
+
 export interface EvolutionOptions {
   temperature?: number;
   maxDebugAttempts?: number;
@@ -31,6 +39,7 @@ export interface EvolutionOptions {
   batchSize?: number;
   onProgress?: (update: ProgressUpdate) => void;
   onChildCompleted?: (child: EvolutionResult, index: number, total: number) => void | Promise<void>;
+  onUsageUpdate?: (usage: TokenUsage, cost: number, model: string) => void;
   experimentsPerChild?: number;
   mashupExperiments?: number;
 }
@@ -63,6 +72,73 @@ interface ToolConversationConfig {
   logPrefix: string; // e.g., "Batch mutation" or "Batch mashup"
 }
 
+function createTokenUsage(): TokenUsage {
+  return { inputTokens: 0, outputTokens: 0, cacheCreationTokens: 0, cacheReadTokens: 0, apiCalls: 0 };
+}
+
+function accumulateUsage(target: TokenUsage, message: Anthropic.Message): void {
+  target.inputTokens += message.usage.input_tokens;
+  target.outputTokens += message.usage.output_tokens;
+  target.apiCalls += 1;
+  // Cache tokens are in cache_creation and cache_read fields (may not always be present)
+  const usage = message.usage as any;
+  if (usage.cache_creation_input_tokens) {
+    target.cacheCreationTokens += usage.cache_creation_input_tokens;
+  }
+  if (usage.cache_read_input_tokens) {
+    target.cacheReadTokens += usage.cache_read_input_tokens;
+  }
+}
+
+function addUsage(target: TokenUsage, source: TokenUsage): void {
+  target.inputTokens += source.inputTokens;
+  target.outputTokens += source.outputTokens;
+  target.cacheCreationTokens += source.cacheCreationTokens;
+  target.cacheReadTokens += source.cacheReadTokens;
+  target.apiCalls += source.apiCalls;
+}
+
+// Per-model pricing (per million tokens)
+const MODEL_PRICING: Record<string, { input: number; output: number; cacheWrite: number; cacheRead: number }> = {
+  'claude-haiku-4-5-20251001': { input: 1.00, output: 5.00, cacheWrite: 1.25, cacheRead: 0.10 },
+  'claude-sonnet-4-6-20250514': { input: 3.00, output: 15.00, cacheWrite: 3.75, cacheRead: 0.30 },
+  'claude-opus-4-6-20250514': { input: 15.00, output: 75.00, cacheWrite: 18.75, cacheRead: 1.50 },
+};
+
+// Short aliases map to full model IDs
+const MODEL_ALIASES: Record<string, string> = {
+  'claude-haiku-4-5': 'claude-haiku-4-5-20251001',
+  'claude-sonnet-4-6': 'claude-sonnet-4-6-20250514',
+  'claude-opus-4-6': 'claude-opus-4-6-20250514',
+};
+
+function computeCost(usage: TokenUsage, model: string): number {
+  const resolvedModel = MODEL_ALIASES[model] || model;
+  const pricing = MODEL_PRICING[resolvedModel];
+  if (!pricing) {
+    // Fallback: use Sonnet pricing as default
+    const fallback = MODEL_PRICING['claude-sonnet-4-6-20250514'];
+    return (
+      (usage.inputTokens * fallback.input +
+        usage.outputTokens * fallback.output +
+        usage.cacheCreationTokens * fallback.cacheWrite +
+        usage.cacheReadTokens * fallback.cacheRead) / 1_000_000
+    );
+  }
+  return (
+    (usage.inputTokens * pricing.input +
+      usage.outputTokens * pricing.output +
+      usage.cacheCreationTokens * pricing.cacheWrite +
+      usage.cacheReadTokens * pricing.cacheRead) / 1_000_000
+  );
+}
+
+export function formatTokenCount(count: number): string {
+  if (count >= 1_000_000) return `${(count / 1_000_000).toFixed(1)}M`;
+  if (count >= 1_000) return `${(count / 1_000).toFixed(1)}k`;
+  return String(count);
+}
+
 export class ShaderEvolver {
   private anthropic: Anthropic;
   private compiler: ShaderCompiler;
@@ -76,6 +152,7 @@ export class ShaderEvolver {
   private gpuPostProcessor: GPUPostProcessor;
   private onProgress?: (update: ProgressUpdate) => void;
   private onChildCompleted?: (child: EvolutionResult, index: number, total: number) => void | Promise<void>;
+  private onUsageUpdate?: (usage: TokenUsage, cost: number, model: string) => void;
   private experimentsPerChild: number;
   private mashupExperiments: number;
 
@@ -97,6 +174,7 @@ export class ShaderEvolver {
     this.maxDebugAttempts = options?.maxDebugAttempts ?? 5;
     this.onProgress = options?.onProgress;
     this.onChildCompleted = options?.onChildCompleted;
+    this.onUsageUpdate = options?.onUsageUpdate;
     this.experimentsPerChild = options?.experimentsPerChild ?? 3;
     this.mashupExperiments = options?.mashupExperiments ?? 3;
     this.webgpuContext = webgpuContext;
@@ -351,8 +429,10 @@ export class ShaderEvolver {
 
     // Track how many have completed for progressive display
     let completedCount = 0;
+    const totalUsage = createTokenUsage();
 
     const generateChild = async (i: number): Promise<EvolutionResult> => {
+      const childUsage = createTokenUsage();
       const childStart = performance.now();
       try {
         console.log(`\n=== Generating child ${i + 1}/${count} ===`);
@@ -363,7 +443,8 @@ export class ShaderEvolver {
           parentShader.source,
           1,
           temperature,
-          model
+          model,
+          childUsage
         );
         const mutateTime = performance.now() - mutateStart;
 
@@ -378,16 +459,23 @@ export class ShaderEvolver {
 
         // Debug until it compiles
         const debugStart = performance.now();
-        const debugResult = await this.debugShader(mutatedSource, model);
+        const debugResult = await this.debugShader(mutatedSource, model, childUsage);
         const debugTime = performance.now() - debugStart;
 
         if (!debugResult.success) {
+          // Still accumulate usage from failed child
+          addUsage(totalUsage, childUsage);
+          this.onUsageUpdate?.(totalUsage, computeCost(totalUsage, model), model);
           return {
             success: false,
             error: `Failed to compile after ${this.maxDebugAttempts} attempts`,
             debugAttempts: this.maxDebugAttempts,
           };
         }
+
+        // Accumulate child usage into running total
+        addUsage(totalUsage, childUsage);
+        this.onUsageUpdate?.(totalUsage, computeCost(totalUsage, model), model);
 
         // Parse parameters and iterations
         const parameters = this.parameterManager.parseParameters(debugResult.source);
@@ -422,6 +510,8 @@ export class ShaderEvolver {
 
         return { success: true, shader: childShader };
       } catch (error) {
+        addUsage(totalUsage, childUsage);
+        this.onUsageUpdate?.(totalUsage, computeCost(totalUsage, model), model);
         const childTime = performance.now() - childStart;
         console.log(`[TIMING] Child ${i + 1}/${count} failed in ${(childTime / 1000).toFixed(1)}s: ${error}`);
         return {
@@ -604,7 +694,8 @@ export class ShaderEvolver {
     system: string,
     messages: Anthropic.MessageParam[],
     model: string,
-    config: ToolConversationConfig
+    config: ToolConversationConfig,
+    usage: TokenUsage
   ): Promise<T[]> {
     let renderCount = 0;
 
@@ -627,6 +718,9 @@ export class ShaderEvolver {
         messages,
       });
       const elapsed = performance.now() - startTime;
+
+      // Accumulate token usage
+      accumulateUsage(usage, message);
 
       // Log timing and token usage
       this.logLLMCall(message, elapsed, config);
@@ -696,8 +790,10 @@ export class ShaderEvolver {
     console.log(`Generating ${count} mashup variations in parallel`);
 
     let completedCount = 0;
+    const totalUsage = createTokenUsage();
 
     const generateMashup = async (i: number): Promise<EvolutionResult> => {
+      const childUsage = createTokenUsage();
       const childStart = performance.now();
       try {
         console.log(`\n=== Generating mashup ${i + 1}/${count} ===`);
@@ -711,7 +807,7 @@ export class ShaderEvolver {
           temperature,
         };
 
-        const mashupShaders = await this.batchMashupShader(promptParams, model);
+        const mashupShaders = await this.batchMashupShader(promptParams, model, childUsage);
 
         if (mashupShaders.length === 0) {
           return { success: false, error: 'No mashup generated' };
@@ -723,15 +819,21 @@ export class ShaderEvolver {
         const llmName = mashupData.name;
 
         // Debug until it compiles
-        const debugResult = await this.debugShader(mashupSource, model);
+        const debugResult = await this.debugShader(mashupSource, model, childUsage);
 
         if (!debugResult.success) {
+          addUsage(totalUsage, childUsage);
+          this.onUsageUpdate?.(totalUsage, computeCost(totalUsage, model), model);
           return {
             success: false,
             error: `Failed to compile after ${this.maxDebugAttempts} attempts`,
             debugAttempts: this.maxDebugAttempts,
           };
         }
+
+        // Accumulate child usage into running total
+        addUsage(totalUsage, childUsage);
+        this.onUsageUpdate?.(totalUsage, computeCost(totalUsage, model), model);
 
         // Parse parameters and iterations
         const parameters = this.parameterManager.parseParameters(debugResult.source);
@@ -768,6 +870,8 @@ export class ShaderEvolver {
 
         return { success: true, shader: mashupShaderDef };
       } catch (error) {
+        addUsage(totalUsage, childUsage);
+        this.onUsageUpdate?.(totalUsage, computeCost(totalUsage, model), model);
         const childTime = performance.now() - childStart;
         console.log(`[TIMING] Mashup ${i + 1}/${count} failed in ${(childTime / 1000).toFixed(1)}s: ${error}`);
         return {
@@ -811,7 +915,8 @@ export class ShaderEvolver {
    */
   private async batchMashupShader(
     promptParams: MashupPromptParams,
-    model: string
+    model: string,
+    usage: TokenUsage
   ): Promise<Array<{ name?: string; shader: string; changelog?: string }>> {
     const { system, user } = createMashupPrompt(promptParams);
 
@@ -872,7 +977,8 @@ export class ShaderEvolver {
         maxRenders: this.mashupExperiments,
         temperature: promptParams.temperature,
         logPrefix: 'Batch mashup',
-      }
+      },
+      usage
     );
   }
 
@@ -883,7 +989,8 @@ export class ShaderEvolver {
     shaderSource: string,
     count: number,
     temperature: number,
-    model: string
+    model: string,
+    usage: TokenUsage
   ): Promise<Array<{ name?: string; shader: string; changelog?: string }>> {
     const promptParams: BatchMutationPromptParams = {
       shaderSource,
@@ -927,7 +1034,8 @@ export class ShaderEvolver {
         maxRenders: this.experimentsPerChild,
         temperature,
         logPrefix: 'Batch mutation',
-      }
+      },
+      usage
     );
   }
 
@@ -1024,7 +1132,8 @@ export class ShaderEvolver {
 
   private async debugShader(
     shaderSource: string,
-    model: string
+    model: string,
+    usage: TokenUsage
   ): Promise<{ success: boolean; source: string; attempts: number }> {
     let currentSource = shaderSource;
     let attempts = 0;
@@ -1054,7 +1163,7 @@ export class ShaderEvolver {
           const errorMessage = ShaderCompiler.formatErrors(result.errors);
           console.log(`Shader failed to compile on attempt ${attempts}; errs=${errorMessage}. Asking LLM to debug`)
 
-          currentSource = await this.requestLLMFix(currentSource, errorMessage, attempts, model);
+          currentSource = await this.requestLLMFix(currentSource, errorMessage, attempts, model, usage);
         }
         continue;
       }
@@ -1080,7 +1189,7 @@ export class ShaderEvolver {
         const errorMessage = `GPU validation errors:\n${pipelineErrors.join('\n')}`;
         console.log(`Shader has GPU validation errors on attempt ${attempts}; errs=${errorMessage}. Asking LLM to debug`);
 
-        currentSource = await this.requestLLMFix(currentSource, errorMessage, attempts, model);
+        currentSource = await this.requestLLMFix(currentSource, errorMessage, attempts, model, usage);
       }
     }
 
@@ -1099,7 +1208,8 @@ export class ShaderEvolver {
     shaderSource: string,
     errorMessage: string,
     attempt: number,
-    model: string
+    model: string,
+    usage: TokenUsage
   ): Promise<string> {
     const promptParams: DebugPromptParams = {
       shaderSource,
@@ -1137,6 +1247,9 @@ export class ShaderEvolver {
         messages,
       });
       const elapsed = performance.now() - startTime;
+
+      // Accumulate token usage
+      accumulateUsage(usage, message);
 
       // Log timing and token usage
       console.log(`[LLM] Debug shader call (attempt ${attempt}):`, {

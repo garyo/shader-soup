@@ -2,15 +2,16 @@
  * Main App Component - Integrates WebGPU engine with UI
  */
 
-import { type Component, onMount, onCleanup, createSignal, Show } from 'solid-js';
+import { type Component, onMount, onCleanup, createSignal, createEffect, on, Show } from 'solid-js';
 import { ShaderGrid } from './ShaderGrid';
 import { Toolbar } from './Toolbar';
 import { MashupToolbar } from './MashupToolbar';
-import { MashupResults } from './MashupResults';
+// MashupResults now embedded in MashupToolbar
 import { LogOverlay, type LogEntry } from './LogOverlay';
 import { ProfilingOverlay } from './ProfilingOverlay';
 import WebGPUCheck from './WebGPUCheck';
 import { shaderStore, inputStore, resultStore, evolutionStore } from '@/stores';
+import { apiKey } from '@/stores/apiKeyStore';
 import { getWebGPUContext, WebGPUContext } from '@/core/engine/WebGPUContext';
 import { ShaderCompiler } from '@/core/engine/ShaderCompiler';
 import { BufferManager } from '@/core/engine/BufferManager';
@@ -24,7 +25,8 @@ import { withGPUErrorScope } from '@/core/engine/GPUErrorHandler';
 import { executeFeedbackLoop } from '@/core/engine/FeedbackLoop';
 import { prepareShader } from '@/core/engine/ShaderPreparation';
 import { AnimationController, type FrameProfile } from '@/core/engine/AnimationController';
-import { ShaderEvolver } from '@/core/llm';
+import { ShaderEvolver, formatTokenCount } from '@/core/llm';
+import type { TokenUsage } from '@/core/llm';
 import type { ShaderDefinition } from '@/types/core';
 import { getErrorMessage, calculateSupersampledDimensions } from '@/utils/helpers';
 import { ShaderExporter } from '@/utils/ShaderExporter';
@@ -57,14 +59,28 @@ const EVOLUTION_CONFIG = {
 export const App: Component = () => {
   const [webgpuReady, setWebgpuReady] = createSignal(false);
   const [error, setError] = createSignal<string | null>(null);
-  const [temperature, setTemperature] = createSignal(0.9); // Default evolution temperature
-  const [model, setModel] = createSignal('claude-sonnet-4-6'); // Default model
+  // Persist temperature and model in localStorage
+  const storedTemp = localStorage.getItem('evolve-temperature');
+  const storedModel = localStorage.getItem('evolve-model');
+  const parsedTemp = storedTemp ? parseFloat(storedTemp) : NaN;
+  const [temperature, _setTemperature] = createSignal(
+    Number.isFinite(parsedTemp) && parsedTemp >= 0 && parsedTemp <= 2 ? parsedTemp : 0.9
+  );
+  const VALID_MODELS = ['claude-haiku-4-5', 'claude-sonnet-4-6', 'claude-opus-4-6'];
+  const DEFAULT_MODEL = 'claude-haiku-4-5';
+  const [model, _setModel] = createSignal(
+    storedModel && VALID_MODELS.includes(storedModel) ? storedModel : DEFAULT_MODEL
+  );
+  const setTemperature = (v: number) => { localStorage.setItem('evolve-temperature', String(v)); _setTemperature(v); };
+  const setModel = (v: string) => { localStorage.setItem('evolve-model', v); _setModel(v); };
   const [logs, setLogs] = createSignal<LogEntry[]>([]);
   const [logOverlayOpen, setLogOverlayOpen] = createSignal(false);
   const [mashupInProgress, setMashupInProgress] = createSignal(false);
+  const [mashupSummary, setMashupSummary] = createSignal<string | null>(null);
   const [profilingVisible, setProfilingVisible] = createSignal(false);
   const [profilingConsoleLog, setProfilingConsoleLog] = createSignal(false);
   const [frameProfiles, setFrameProfiles] = createSignal<Map<string, FrameProfile>>(new Map());
+  const [lastUsage, setLastUsage] = createSignal<{ usage: TokenUsage; cost: number; model: string } | null>(null);
 
   const maxLogEntries = 32;
   // Add log entry to the overlay (at the end of the list)
@@ -154,18 +170,21 @@ export const App: Component = () => {
 
       // CanvasRenderer created on-demand in ShaderEvolver for GPU-only thumbnail rendering
 
-      // Initialize LLM-based shader evolver
-      const apiKey = import.meta.env.VITE_ANTHROPIC_API_KEY;
-      console.log('API Key check:', apiKey ? `Found (${apiKey.substring(0, 15)}...)` : 'NOT FOUND');
-      if (apiKey) {
-        shaderEvolver = new ShaderEvolver(apiKey, compiler, parameterManager, context, bufferManager, {
+      // Initialize ShaderEvolver reactively based on API key
+      const initShaderEvolver = (key: string) => {
+        if (!key) {
+          shaderEvolver = undefined as any;
+          console.warn('No API key set - evolution feature disabled');
+          return;
+        }
+        console.log('API Key check:', `Found (${key.substring(0, 15)}...)`);
+        shaderEvolver = new ShaderEvolver(key, compiler, parameterManager, context, bufferManager, {
           experimentsPerChild: EVOLUTION_CONFIG.experimentsPerChild,
           mashupExperiments: EVOLUTION_CONFIG.mashupExperiments,
           onProgress: (update) => {
-            // Handle progress updates from shader evolver
             const activeEvolutions = Array.from(evolutionStore.activeEvolutions.entries());
             if (activeEvolutions.length > 0) {
-              const [shaderId] = activeEvolutions[0]; // Get the active evolution
+              const [shaderId] = activeEvolutions[0];
               if (update.type === 'child') {
                 evolutionStore.updateProgress(shaderId, {
                   currentChild: update.currentChild || 0,
@@ -185,21 +204,18 @@ export const App: Component = () => {
               }
             }
           },
+          onUsageUpdate: (usage, cost, usageModel) => {
+            setLastUsage({ usage: { ...usage }, cost, model: usageModel });
+          },
           onChildCompleted: async (result, index, total) => {
-            // Handle each child/mashup as it completes (progressive display)
             const activeEvolutions = Array.from(evolutionStore.activeEvolutions.entries());
 
             if (activeEvolutions.length > 0) {
-              // Evolution mode
               const [shaderId] = activeEvolutions[0];
 
               if (result.success && result.shader) {
                 addLog(`✓ Child ${index + 1}/${total} compiled successfully (${result.debugAttempts || 0} debug attempts)`);
-
-                // Add child to evolution store immediately
                 evolutionStore.addChild(shaderId, result.shader);
-
-                // Execute child shader to generate GPU texture for display
                 await executeShader(result.shader.id, result.shader);
               } else {
                 addLog(`✗ Child ${index + 1}/${total} failed: ${result.error}`, 'error');
@@ -208,14 +224,9 @@ export const App: Component = () => {
                 });
               }
             } else if (mashupInProgress()) {
-              // Mashup mode
               if (result.success && result.shader) {
                 addLog(`✓ Mashup ${index + 1}/${total} compiled successfully`);
-
-                // Add mashup result immediately
                 evolutionStore.addMashupResult(result.shader);
-
-                // Execute mashup shader to generate GPU texture for display
                 await executeShader(result.shader.id, result.shader);
               } else {
                 addLog(`✗ Mashup ${index + 1}/${total} failed: ${result.error}`, 'error');
@@ -224,9 +235,15 @@ export const App: Component = () => {
           }
         });
         console.log('ShaderEvolver initialized successfully');
-      } else {
-        console.warn('VITE_ANTHROPIC_API_KEY not set - evolution feature disabled');
-      }
+      };
+
+      // Initialize with current key (may be empty)
+      initShaderEvolver(apiKey());
+
+      // Re-initialize when API key changes
+      createEffect(on(apiKey, (key) => {
+        if (context) initShaderEvolver(key);
+      }, { defer: true }));
 
       setWebgpuReady(true);
 
@@ -640,7 +657,7 @@ export const App: Component = () => {
 
   const handleEvolve = async (shaderId: string) => {
     if (!shaderEvolver) {
-      alert('Evolution feature requires VITE_ANTHROPIC_API_KEY environment variable');
+      alert('Please set your Anthropic API key using the API Key button in the toolbar');
       return;
     }
 
@@ -667,6 +684,8 @@ export const App: Component = () => {
     evolutionStore.startEvolution(shaderId, shader.name, childrenCount, currentTemp, EVOLUTION_CONFIG.experimentsPerChild);
 
     addLog(`Starting evolution of "${shader.name}" (model: ${currentModel}, temp: ${currentTemp.toFixed(2)}, children: ${childrenCount})`);
+    setLastUsage(null);
+    const evolveStart = performance.now();
 
     try {
       addLog(`Generating ${childrenCount} shader variations...`);
@@ -676,7 +695,10 @@ export const App: Component = () => {
       const results = await shaderEvolver.evolveShaderBatch(shaderWithBakedParams, childrenCount, currentTemp, currentModel);
 
       // All children have already been added/executed via the callback
-      addLog(`Evolution complete: ${results.filter(r => r.success).length}/${childrenCount} succeeded`, 'success');
+      const usage = lastUsage();
+      const elapsed = ((performance.now() - evolveStart) / 1000).toFixed(1);
+      const costStr = usage ? ` — $${usage.cost.toFixed(4)} (${formatTokenCount(usage.usage.inputTokens)} in + ${formatTokenCount(usage.usage.outputTokens)} out, ${usage.usage.apiCalls} API calls)` : '';
+      addLog(`Evolution complete: ${results.filter(r => r.success).length}/${childrenCount} succeeded${costStr} in ${elapsed}s`, 'success');
     } catch (error) {
       const errorMsg = getErrorMessage(error, 'Unknown batch evolution error');
       addLog(`Evolution failed: ${errorMsg}`, 'error');
@@ -1161,7 +1183,7 @@ export const App: Component = () => {
 
   const handleMashup = async () => {
     if (!shaderEvolver) {
-      alert('Mashup feature requires VITE_ANTHROPIC_API_KEY environment variable');
+      alert('Please set your Anthropic API key using the API Key button in the toolbar');
       return;
     }
 
@@ -1177,7 +1199,10 @@ export const App: Component = () => {
     const parentNames = selectedShaders.map(s => s.name);
 
     setMashupInProgress(true);
+    setMashupSummary(null);
     addLog(`Starting mashup of ${selectedShaders.length} shaders: ${parentNames.join(', ')} (model: ${currentModel}, temp: ${currentTemp.toFixed(2)}, variants: ${mashupCount})`);
+    setLastUsage(null);
+    const mashupStart = performance.now();
 
     try {
       // Clear previous mashup results
@@ -1193,15 +1218,16 @@ export const App: Component = () => {
         parentNames
       );
 
-      addLog(`Mashup complete: ${results.filter(r => r.success).length}/${mashupCount} succeeded`, 'success');
+      const usage = lastUsage();
+      const elapsed = ((performance.now() - mashupStart) / 1000).toFixed(1);
+      const succeeded = results.filter(r => r.success).length;
+      const costStr = usage ? ` — $${usage.cost.toFixed(4)} (${formatTokenCount(usage.usage.inputTokens)} in + ${formatTokenCount(usage.usage.outputTokens)} out, ${usage.usage.apiCalls} API calls)` : '';
+      const summaryStr = `${succeeded}/${mashupCount} succeeded${costStr} in ${elapsed}s`;
+      addLog(`Mashup complete: ${summaryStr}`, 'success');
+      setMashupSummary(summaryStr);
 
-      // Scroll to mashup results
-      setTimeout(() => {
-        const mashupSection = document.querySelector('.mashup-results');
-        if (mashupSection) {
-          mashupSection.scrollIntoView({ behavior: 'smooth', block: 'start' });
-        }
-      }, 100);
+      // Auto-clear mashup selection so bottom bar transitions to showing results
+      shaderStore.clearMashupSelection();
     } catch (error) {
       const errorMsg = getErrorMessage(error, 'Unknown mashup error');
       addLog(`Mashup failed: ${errorMsg}`, 'error');
@@ -1217,6 +1243,7 @@ export const App: Component = () => {
 
   const handleClearMashupResults = () => {
     evolutionStore.clearMashupResults();
+    setMashupSummary(null);
   };
 
   /**
@@ -1319,37 +1346,44 @@ export const App: Component = () => {
 
         <main class="app-main">
 
-          <ShaderGrid
-            shaders={shaderStore.getActiveShaders()}
-            onParameterChange={handleParameterChange}
-            onIterationChange={handleIterationChange}
-            onGlobalParameterChange={handleGlobalParameterChange}
-            onGlobalParametersReset={handleGlobalParametersReset}
-            onEvolve={handleEvolve}
-            onCancelEvolution={handleCancelEvolution}
-            onPromoteChild={handlePromoteChild}
-            onMashupToggle={handleMashupToggle}
-            onDeleteShader={handleDeleteShader}
-            onDownloadShader={handleDownloadShader}
-            onExportShader={handleExportShader}
-            onRenderPreview={renderShaderPreview}
-            onShaderEdit={handleShaderEdit}
-            onShaderCompile={handleShaderCompile}
-            onAnimationStart={handleAnimationStart}
-            onAnimationStop={handleAnimationStop}
-          />
+          {/* Shared props for both grids */}
+          {(() => {
+            const gridProps = {
+              onParameterChange: handleParameterChange,
+              onIterationChange: handleIterationChange,
+              onGlobalParameterChange: handleGlobalParameterChange,
+              onGlobalParametersReset: handleGlobalParametersReset,
+              onEvolve: handleEvolve,
+              onCancelEvolution: handleCancelEvolution,
+              onPromoteChild: handlePromoteChild,
+              onMashupToggle: handleMashupToggle,
+              onDeleteShader: handleDeleteShader,
+              onDownloadShader: handleDownloadShader,
+              onExportShader: handleExportShader,
+              onRenderPreview: renderShaderPreview,
+              onShaderEdit: handleShaderEdit,
+              onShaderCompile: handleShaderCompile,
+              onAnimationStart: handleAnimationStart,
+              onAnimationStop: handleAnimationStop,
+            } as const;
 
-          <Show when={evolutionStore.getMashupResults().length > 0}>
-            <MashupResults
-              mashups={evolutionStore.getMashupResults()}
-              parentNames={evolutionStore.getMashupParentNames()}
-              onPromote={handlePromoteChild}
-              onClear={handleClearMashupResults}
-              onRenderPreview={renderShaderPreview}
-              onAnimationStart={handleAnimationStart}
-              onAnimationStop={handleAnimationStop}
-            />
-          </Show>
+            const allShaders = shaderStore.getActiveShaders();
+            const examples = allShaders.filter(s => !shaderStore.isPromoted(s.id));
+            const evolved = allShaders.filter(s => shaderStore.isPromoted(s.id));
+
+            return (
+              <>
+                <Show when={evolved.length > 0}>
+                  <h2 class="section-header">Evolved</h2>
+                  <ShaderGrid shaders={evolved} {...gridProps} />
+                  <hr class="section-divider" />
+                </Show>
+
+                <h2 class="section-header">Samples</h2>
+                <ShaderGrid shaders={examples} {...gridProps} />
+              </>
+            );
+          })()}
 
           <Show when={resultStore.isProcessing}>
             <div class="processing-indicator">Processing...</div>
@@ -1361,6 +1395,15 @@ export const App: Component = () => {
         onMashup={handleMashup}
         onClear={handleClearMashupSelection}
         isLoading={mashupInProgress()}
+        mashupCount={EVOLUTION_CONFIG.mashupCount}
+        mashupResults={evolutionStore.getMashupResults()}
+        mashupParentNames={evolutionStore.getMashupParentNames()}
+        mashupSummary={mashupSummary()}
+        onPromoteMashup={handlePromoteChild}
+        onClearResults={handleClearMashupResults}
+        onRenderPreview={renderShaderPreview}
+        onAnimationStart={handleAnimationStart}
+        onAnimationStop={handleAnimationStop}
       />
 
       <ProfilingOverlay
