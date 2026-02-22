@@ -118,8 +118,8 @@ export class ShaderImporter {
           : [],
         iterations: metadata?.iterations || 1,
         description: metadata?.description,
-        createdAt: new Date(),
-        modifiedAt: new Date(),
+        createdAt: metadata?.createdAt ? new Date(metadata.createdAt) : new Date(),
+        modifiedAt: metadata?.modifiedAt ? new Date(metadata.modifiedAt) : new Date(),
         changelog: metadata?.changelog,
       };
 
