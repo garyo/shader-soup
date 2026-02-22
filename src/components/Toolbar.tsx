@@ -178,6 +178,13 @@ export const Toolbar: Component<ToolbarProps> = (props) => {
                 <li><kbd>R</kbd> or <kbd>0</kbd> — Reset all animations</li>
                 <li><kbd>P</kbd> — Toggle profiling overlay</li>
               </ul>
+
+              <h4>Author</h4>
+              <p>
+                Created by Gary Oberbrunner.{' '}
+                <a href="https://blog.oberbrunner.com" target="_blank" rel="noopener noreferrer">Blog</a>{' | '}
+                <a href="https://www.linkedin.com/in/garyoberbrunner/" target="_blank" rel="noopener noreferrer">LinkedIn</a>
+              </p>
             </div>
           </div>
         </div>
