@@ -25,6 +25,7 @@ import { withGPUErrorScope } from '@/core/engine/GPUErrorHandler';
 import { executeFeedbackLoop } from '@/core/engine/FeedbackLoop';
 import { prepareShader } from '@/core/engine/ShaderPreparation';
 import { AnimationController, type FrameProfile } from '@/core/engine/AnimationController';
+import { gpuTimeout } from '@/core/engine/GPUTimeout';
 import { ShaderEvolver, formatTokenCount } from '@/core/llm';
 import type { TokenUsage } from '@/core/llm';
 import type { ShaderDefinition } from '@/types/core';
@@ -292,6 +293,11 @@ export const App: Component = () => {
       };
       window.addEventListener('keydown', handleKeyDown);
       onCleanup(() => window.removeEventListener('keydown', handleKeyDown));
+
+      // Stop all animations on page unload to prevent GPU hangs
+      const handleBeforeUnload = () => animationController.stopAll();
+      window.addEventListener('beforeunload', handleBeforeUnload);
+      onCleanup(() => window.removeEventListener('beforeunload', handleBeforeUnload));
 
       // Load example shaders
       loadExampleShaders();
@@ -913,7 +919,7 @@ export const App: Component = () => {
       await withGPUErrorScope(device, 'shader execution', async () => {
         await executePreparedShader(prep, superDimensions, 'hires');
         // CRITICAL: Wait for shader execution to complete
-        await context.getDevice().queue.onSubmittedWorkDone();
+        await gpuTimeout(context.getDevice());
       });
 
       // Copy HDR texture to buffer for post-processing (temporary bridge for MVP)
@@ -933,7 +939,7 @@ export const App: Component = () => {
         { width: superDimensions.width, height: superDimensions.height }
       );
       device.queue.submit([copyEncoder.finish()]);
-      await device.queue.onSubmittedWorkDone();
+      await gpuTimeout(device);
 
       // Apply gamma/contrast post-processing
       const processedBuffer = await withGPUErrorScope(device, 'post-processing', async () => {
@@ -956,7 +962,7 @@ export const App: Component = () => {
       });
 
       // Wait for all GPU work to complete before downloading
-      await context.getDevice().queue.onSubmittedWorkDone();
+      await gpuTimeout(context.getDevice());
 
       // Download as PNG
       const filename = `${shader.name.replace(/[^a-z0-9]/gi, '_').toLowerCase()}_${hiResDimensions.width}x${hiResDimensions.height}.png`;
@@ -1030,7 +1036,7 @@ export const App: Component = () => {
           { width: dimensions.width, height: dimensions.height }
         );
         device.queue.submit([copyEncoder.finish()]);
-        await device.queue.onSubmittedWorkDone();
+        await gpuTimeout(device);
 
         const processedBuffer = await withGPUErrorScope(device, 'export-post-processing', async () => {
           return await postProcessor.applyGammaContrast(
@@ -1116,7 +1122,7 @@ export const App: Component = () => {
             { width: dimensions.width, height: dimensions.height }
           );
           device.queue.submit([copyEncoder.finish()]);
-          await device.queue.onSubmittedWorkDone();
+          await gpuTimeout(device);
 
           const processedBuffer = await withGPUErrorScope(device, 'export-all-post-processing', async () => {
             return await postProcessor.applyGammaContrast(
@@ -1337,7 +1343,7 @@ export const App: Component = () => {
         { width: dimensions.width, height: dimensions.height }
       );
       device.queue.submit([copyEncoder.finish()]);
-      await device.queue.onSubmittedWorkDone();
+      await gpuTimeout(device);
 
       // Read result
       const imageData = await resultRenderer.bufferToImageData(outputBuffer, dimensions);

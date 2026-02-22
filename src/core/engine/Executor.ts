@@ -55,8 +55,6 @@ export class Executor {
       device.queue.submit([commandBuffer]);
 
       if (this.enableProfiling) {
-        // Only sync when profiling to get accurate timing
-        await device.queue.onSubmittedWorkDone();
         const endTime = performance.now();
           return {
             compilationTime: 0, // Not measured here
@@ -116,7 +114,6 @@ export class Executor {
       device.queue.submit(commandBuffers);
 
       if (this.enableProfiling) {
-        await device.queue.onSubmittedWorkDone();
         const endTime = performance.now();
         const totalTime = endTime - startTime;
 

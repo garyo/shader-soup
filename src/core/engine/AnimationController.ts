@@ -200,14 +200,13 @@ export class AnimationController {
       cancelAnimationFrame(state.rafId);
       this.animations.delete(shaderId);
     }
-    // Defer feedback texture cleanup — an in-flight renderFrame may still
-    // reference the texture. Schedule destruction after the GPU queue drains.
+    // Clean up feedback textures. The animation frame was cancelled above,
+    // so no further renderFrame calls will reference these.
     const feedbackTexture = this.feedbackTextures.get(shaderId);
     if (feedbackTexture) {
       this.feedbackTextures.delete(shaderId);
       this.feedbackSamplers.delete(shaderId);
-      const device = this.context.getDevice();
-      device.queue.onSubmittedWorkDone().then(() => feedbackTexture.destroy());
+      feedbackTexture.destroy();
     }
   }
 
@@ -296,7 +295,14 @@ export class AnimationController {
    */
   private async renderFrame(state: AnimationState): Promise<void> {
     const { prep, shaderId, superDimensions } = state;
-    const device = this.context.getDevice();
+    let device: GPUDevice;
+    try {
+      device = this.context.getDevice();
+    } catch {
+      // Device lost — stop this animation silently
+      this.animations.delete(shaderId);
+      return;
+    }
     const profiling = this.profilingEnabled;
 
     const frameStart = performance.now();
