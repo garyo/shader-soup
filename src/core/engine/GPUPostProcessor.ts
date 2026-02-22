@@ -128,6 +128,10 @@ export class GPUPostProcessor {
       label: 'post-processor-params',
     });
 
+    // Initialize mipmap pipeline eagerly so it's ready for the first render
+    // (downsampleToDisplay and generateMipmaps both need it synchronously)
+    await this.initMipmapPipeline();
+
     this.initialized = true;
   }
 
