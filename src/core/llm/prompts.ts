@@ -212,6 +212,7 @@ export interface BatchMutationPromptParams {
   count: number;
   temperature: number,
   preserveParams: boolean;
+  instructions?: string;
 }
 
 export interface DebugPromptParams {
@@ -229,6 +230,7 @@ export interface MashupPromptParams {
   shaders: Array<{ name: string; source: string }>;
   count: number;
   temperature: number;
+  instructions?: string;
 }
 
 export interface PromptWithSystem {
@@ -288,7 +290,8 @@ The tool expects a JSON object with a "shaders" array, each containing:
 - "shader" (required): The complete WGSL code
 - "changelog" (optional): Brief notes on how the parent shaders were combined
 
-Be creative with the names - use evocative, descriptive titles that hint at the visual or mathematical nature of the mashup!`;
+Be creative with the names - use evocative, descriptive titles that hint at the visual or mathematical nature of the mashup!`
+    + (params.instructions ? `\n\nSPECIAL INSTRUCTIONS FROM THE USER (pay close attention to these while remaining creative):\n${params.instructions}` : '');
 
   return { system, user };
 }
@@ -383,7 +386,8 @@ Use the shader_output tool to return your ${params.count} shader variations.
 The tool expects a JSON object with a "shaders" array, each containing:
 - "name" (required): A creative, concise title (2-4 words) that captures the visual essence (e.g., "Fractal Bloom", "Neon Hex Grid", "Warped Starfield")
 - "shader" (required): The complete WGSL code
-- "changelog" (optional): Brief notes on significant changes`;
+- "changelog" (optional): Brief notes on significant changes`
+    + (params.instructions ? `\n\nSPECIAL INSTRUCTIONS FROM THE USER (pay close attention to these while remaining creative):\n${params.instructions}` : '');
 
   return { system, user };
 }

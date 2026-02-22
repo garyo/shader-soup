@@ -6,7 +6,7 @@ import { type Component, onMount, onCleanup, createSignal, createEffect, on, Sho
 import { ShaderGrid } from './ShaderGrid';
 import { Toolbar } from './Toolbar';
 import { MashupToolbar } from './MashupToolbar';
-// MashupResults now embedded in MashupToolbar
+import { EvolveOptionsModal } from './EvolveOptionsModal';
 import { LogOverlay, type LogEntry } from './LogOverlay';
 import { ProfilingOverlay } from './ProfilingOverlay';
 import WebGPUCheck from './WebGPUCheck';
@@ -81,6 +81,11 @@ export const App: Component = () => {
   const [profilingConsoleLog, setProfilingConsoleLog] = createSignal(false);
   const [frameProfiles, setFrameProfiles] = createSignal<Map<string, FrameProfile>>(new Map());
   const [lastUsage, setLastUsage] = createSignal<{ usage: TokenUsage; cost: number; model: string } | null>(null);
+
+  // Evolve/Mashup options modal state
+  const [evolveOptionsOpen, setEvolveOptionsOpen] = createSignal(false);
+  const [evolveOptionsMode, setEvolveOptionsMode] = createSignal<'evolve' | 'mashup'>('evolve');
+  const [pendingEvolveShaderId, setPendingEvolveShaderId] = createSignal<string | null>(null);
 
   const maxLogEntries = 32;
   // Add log entry to the overlay (at the end of the list)
@@ -655,12 +660,20 @@ export const App: Component = () => {
     return elapsed;
   };
 
-  const handleEvolve = async (shaderId: string) => {
+  const handleEvolve = (shaderId: string) => {
     if (!shaderEvolver) {
       alert('Please set your Anthropic API key using the API Key button in the toolbar');
       return;
     }
+    const shader = shaderStore.getShader(shaderId);
+    if (!shader) return;
 
+    setPendingEvolveShaderId(shaderId);
+    setEvolveOptionsMode('evolve');
+    setEvolveOptionsOpen(true);
+  };
+
+  const runEvolve = async (shaderId: string, childrenCount: number, instructions: string, overrideTemp: number, overrideModel: string) => {
     const shader = shaderStore.getShader(shaderId);
     if (!shader) return;
 
@@ -677,24 +690,23 @@ export const App: Component = () => {
       }),
     };
 
-    // Start evolution
-    const childrenCount = EVOLUTION_CONFIG.childrenCount;
-    const currentTemp = temperature(); // Get current temperature from signal
-    const currentModel = model(); // Get current model from signal
+    const currentTemp = overrideTemp;
+    const currentModel = overrideModel;
     evolutionStore.startEvolution(shaderId, shader.name, childrenCount, currentTemp, EVOLUTION_CONFIG.experimentsPerChild);
 
-    addLog(`Starting evolution of "${shader.name}" (model: ${currentModel}, temp: ${currentTemp.toFixed(2)}, children: ${childrenCount})`);
+    const instrNote = instructions ? `, instructions: "${instructions.substring(0, 50)}${instructions.length > 50 ? '...' : ''}"` : '';
+    addLog(`Starting evolution of "${shader.name}" (model: ${currentModel}, temp: ${currentTemp.toFixed(2)}, children: ${childrenCount}${instrNote})`);
     setLastUsage(null);
     const evolveStart = performance.now();
 
     try {
       addLog(`Generating ${childrenCount} shader variations...`);
 
-      // Evolve all children in one batch call with current temperature, model, and baked params
-      // Children are processed progressively via onChildCompleted callback
-      const results = await shaderEvolver.evolveShaderBatch(shaderWithBakedParams, childrenCount, currentTemp, currentModel);
+      const results = await shaderEvolver.evolveShaderBatch(
+        shaderWithBakedParams, childrenCount, currentTemp, currentModel,
+        instructions || undefined
+      );
 
-      // All children have already been added/executed via the callback
       const usage = lastUsage();
       const elapsed = ((performance.now() - evolveStart) / 1000).toFixed(1);
       const costStr = usage ? ` — $${usage.cost.toFixed(4)} (${formatTokenCount(usage.usage.inputTokens)} in + ${formatTokenCount(usage.usage.outputTokens)} out, ${usage.usage.apiCalls} API calls)` : '';
@@ -708,7 +720,6 @@ export const App: Component = () => {
       });
     }
 
-    // Complete evolution
     evolutionStore.completeEvolution(shaderId);
   };
 
@@ -1181,7 +1192,7 @@ export const App: Component = () => {
     input.click();
   };
 
-  const handleMashup = async () => {
+  const handleMashup = () => {
     if (!shaderEvolver) {
       alert('Please set your Anthropic API key using the API Key button in the toolbar');
       return;
@@ -1193,26 +1204,33 @@ export const App: Component = () => {
       return;
     }
 
-    const mashupCount = EVOLUTION_CONFIG.mashupCount;
-    const currentTemp = temperature(); // Use current temperature
-    const currentModel = model(); // Use current model
+    setEvolveOptionsMode('mashup');
+    setEvolveOptionsOpen(true);
+  };
+
+  const runMashup = async (mashupCount: number, instructions: string, overrideTemp: number, overrideModel: string) => {
+    const selectedShaders = shaderStore.getMashupSelected();
+    if (selectedShaders.length < 2) return;
+
+    const currentTemp = overrideTemp;
+    const currentModel = overrideModel;
     const parentNames = selectedShaders.map(s => s.name);
 
     setMashupInProgress(true);
     setMashupSummary(null);
-    addLog(`Starting mashup of ${selectedShaders.length} shaders: ${parentNames.join(', ')} (model: ${currentModel}, temp: ${currentTemp.toFixed(2)}, variants: ${mashupCount})`);
+    const instrNote = instructions ? `, instructions: "${instructions.substring(0, 50)}${instructions.length > 50 ? '...' : ''}"` : '';
+    addLog(`Starting mashup of ${selectedShaders.length} shaders: ${parentNames.join(', ')} (model: ${currentModel}, temp: ${currentTemp.toFixed(2)}, variants: ${mashupCount}${instrNote})`);
     setLastUsage(null);
     const mashupStart = performance.now();
 
     try {
-      // Clear previous mashup results
       evolutionStore.clearMashupResults();
 
-      // Generate mashup variations
-      // Mashups are processed progressively via onChildCompleted callback
-      const results = await shaderEvolver.evolveMashup(selectedShaders, mashupCount, currentTemp, currentModel);
+      const results = await shaderEvolver.evolveMashup(
+        selectedShaders, mashupCount, currentTemp, currentModel,
+        instructions || undefined
+      );
 
-      // Update mashup results with parent names (all mashups have already been added/executed via callback)
       evolutionStore.setMashupResults(
         evolutionStore.getMashupResults(),
         parentNames
@@ -1226,7 +1244,6 @@ export const App: Component = () => {
       addLog(`Mashup complete: ${summaryStr}`, 'success');
       setMashupSummary(summaryStr);
 
-      // Auto-clear mashup selection so bottom bar transitions to showing results
       shaderStore.clearMashupSelection();
     } catch (error) {
       const errorMsg = getErrorMessage(error, 'Unknown mashup error');
@@ -1244,6 +1261,24 @@ export const App: Component = () => {
   const handleClearMashupResults = () => {
     evolutionStore.clearMashupResults();
     setMashupSummary(null);
+  };
+
+  const handleEvolveOptionsConfirm = (opts: { count: number; instructions: string; temperature: number; model: string }) => {
+    setEvolveOptionsOpen(false);
+    if (evolveOptionsMode() === 'evolve') {
+      const shaderId = pendingEvolveShaderId();
+      if (shaderId) {
+        setPendingEvolveShaderId(null);
+        runEvolve(shaderId, opts.count, opts.instructions, opts.temperature, opts.model);
+      }
+    } else {
+      runMashup(opts.count, opts.instructions, opts.temperature, opts.model);
+    }
+  };
+
+  const handleEvolveOptionsCancel = () => {
+    setEvolveOptionsOpen(false);
+    setPendingEvolveShaderId(null);
   };
 
   /**
@@ -1390,6 +1425,16 @@ export const App: Component = () => {
           </Show>
         </main>
       </Show>
+
+      <EvolveOptionsModal
+        open={evolveOptionsOpen()}
+        mode={evolveOptionsMode()}
+        defaultCount={evolveOptionsMode() === 'evolve' ? EVOLUTION_CONFIG.childrenCount : EVOLUTION_CONFIG.mashupCount}
+        temperature={temperature()}
+        model={model()}
+        onConfirm={handleEvolveOptionsConfirm}
+        onCancel={handleEvolveOptionsCancel}
+      />
 
       <MashupToolbar
         onMashup={handleMashup}

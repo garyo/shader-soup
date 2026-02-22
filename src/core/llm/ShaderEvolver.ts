@@ -422,7 +422,8 @@ export class ShaderEvolver {
     parentShader: ShaderDefinition,
     count: number,
     temperature: number,
-    model: string
+    model: string,
+    instructions?: string
   ): Promise<EvolutionResult[]> {
     const batchStart = performance.now();
     console.log(`Generating ${count} children in parallel`);
@@ -444,7 +445,8 @@ export class ShaderEvolver {
           1,
           temperature,
           model,
-          childUsage
+          childUsage,
+          instructions
         );
         const mutateTime = performance.now() - mutateStart;
 
@@ -779,7 +781,8 @@ export class ShaderEvolver {
     parentShaders: ShaderDefinition[],
     count: number,
     temperature: number,
-    model: string
+    model: string,
+    instructions?: string
   ): Promise<EvolutionResult[]> {
     if (parentShaders.length < 2) {
       throw new Error('Mashup requires at least 2 parent shaders');
@@ -805,6 +808,7 @@ export class ShaderEvolver {
           })),
           count: 1,
           temperature,
+          instructions,
         };
 
         const mashupShaders = await this.batchMashupShader(promptParams, model, childUsage);
@@ -990,13 +994,15 @@ export class ShaderEvolver {
     count: number,
     temperature: number,
     model: string,
-    usage: TokenUsage
+    usage: TokenUsage,
+    instructions?: string
   ): Promise<Array<{ name?: string; shader: string; changelog?: string }>> {
     const promptParams: BatchMutationPromptParams = {
       shaderSource,
       count,
       temperature,
       preserveParams: false,
+      instructions,
     };
 
     const { system, user } = createBatchMutationPrompt(promptParams);
