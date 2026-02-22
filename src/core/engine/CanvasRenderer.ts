@@ -4,6 +4,7 @@
  */
 
 import type { WebGPUContext } from './WebGPUContext';
+import displayShaderSource from '../../shaders/utils/display.wgsl?raw';
 
 export class CanvasRenderer {
   private context: WebGPUContext;
@@ -27,9 +28,8 @@ export class CanvasRenderer {
 
     const device = this.context.getDevice();
 
-    // Load display shader
-    const response = await fetch('/src/shaders/utils/display.wgsl');
-    const shaderCode = await response.text();
+    // Display shader (imported at build time)
+    const shaderCode = displayShaderSource;
 
     const shaderModule = device.createShaderModule({
       label: 'display-shader',

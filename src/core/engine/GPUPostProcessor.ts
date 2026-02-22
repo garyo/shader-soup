@@ -5,6 +5,8 @@
 import type { WebGPUContext } from './WebGPUContext';
 import type { ShaderCompiler } from './ShaderCompiler';
 import type { BufferManager } from './BufferManager';
+import gammaContrastShaderSource from '../../shaders/utils/gamma-contrast.wgsl?raw';
+import mipmapBlitShaderSource from '../../shaders/utils/mipmap-blit.wgsl?raw';
 
 export class GPUPostProcessor {
   private context: WebGPUContext;
@@ -55,10 +57,8 @@ export class GPUPostProcessor {
     const device = this.context.getDevice();
     const displayFormat = this.context.getDisplayStorageFormat();
 
-    // Load gamma-contrast shader
-    const shaderPath = '/src/shaders/utils/gamma-contrast.wgsl';
-    const response = await fetch(shaderPath);
-    let shaderSource = await response.text();
+    // Gamma-contrast shader (imported at build time)
+    let shaderSource = gammaContrastShaderSource;
 
     // Replace format placeholder with actual display format
     shaderSource = shaderSource.replace(/rgba16float/g, displayFormat);
@@ -258,9 +258,8 @@ export class GPUPostProcessor {
 
     const device = this.context.getDevice();
 
-    // Load mipmap blit shader
-    const response = await fetch('/src/shaders/utils/mipmap-blit.wgsl');
-    const shaderCode = await response.text();
+    // Mipmap blit shader (imported at build time)
+    const shaderCode = mipmapBlitShaderSource;
     const shaderModule = device.createShaderModule({
       label: 'mipmap-blit-shader',
       code: shaderCode,
