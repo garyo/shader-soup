@@ -40,7 +40,6 @@ import checkerboardSource from '../shaders/examples/checkerboard.wgsl?raw';
 import radialGradientSource from '../shaders/examples/radial-gradient.wgsl?raw';
 import perlinCloudsSource from '../shaders/examples/perlin-clouds.wgsl?raw';
 import marbleSource from '../shaders/examples/marble.wgsl?raw';
-import cellularPatternSource from '../shaders/examples/cellular-pattern.wgsl?raw';
 import sineWaveTexturedSource from '../shaders/examples/sine-wave-textured.wgsl?raw';
 import feedbackSource from '../shaders/examples/feedback.wgsl?raw';
 
@@ -87,6 +86,7 @@ export const App: Component = () => {
   const [evolveOptionsOpen, setEvolveOptionsOpen] = createSignal(false);
   const [evolveOptionsMode, setEvolveOptionsMode] = createSignal<'evolve' | 'mashup'>('evolve');
   const [pendingEvolveShaderId, setPendingEvolveShaderId] = createSignal<string | null>(null);
+  const [activeShaderTab, setActiveShaderTab] = createSignal<'evolved' | 'samples'>('samples');
 
   const maxLogEntries = 32;
   // Add log entry to the overlay (at the end of the list)
@@ -336,12 +336,7 @@ export const App: Component = () => {
         source: marbleSource,
         description: 'Marble-like patterns with turbulence and domain warping',
       },
-      {
-        name: 'Cellular Pattern',
-        source: cellularPatternSource,
-        description: 'Voronoi-like cellular noise for organic patterns',
-      },
-      {
+{
         name: 'Color Mixer',
         source: colorMixerSource,
         description: 'RGB gradient generator with multiple mix modes',
@@ -1066,9 +1061,9 @@ export const App: Component = () => {
   };
 
   const handleExportAllShaders = async () => {
-    const shaders = shaderStore.getActiveShaders();
+    const shaders = shaderStore.getActiveShaders().filter(s => shaderStore.isPromoted(s.id));
     if (shaders.length === 0) {
-      addLog('No shaders to export', 'error');
+      addLog('No user shaders to export', 'error');
       return;
     }
 
@@ -1417,16 +1412,33 @@ export const App: Component = () => {
             const examples = allShaders.filter(s => !shaderStore.isPromoted(s.id));
             const evolved = allShaders.filter(s => shaderStore.isPromoted(s.id));
 
+            // Auto-switch to samples if evolved tab is active but empty
+            const tab = evolved.length === 0 ? 'samples' : activeShaderTab();
+
             return (
               <>
-                <Show when={evolved.length > 0}>
-                  <h2 class="section-header">Evolved</h2>
+                <div class="shader-tabs">
+                  <Show when={evolved.length > 0}>
+                    <button
+                      class={`shader-tab ${tab === 'evolved' ? 'active' : ''}`}
+                      onClick={() => setActiveShaderTab('evolved')}
+                    >
+                      Evolved ({evolved.length})
+                    </button>
+                  </Show>
+                  <button
+                    class={`shader-tab ${tab === 'samples' ? 'active' : ''}`}
+                    onClick={() => setActiveShaderTab('samples')}
+                  >
+                    Samples ({examples.length})
+                  </button>
+                </div>
+                <Show when={tab === 'evolved'}>
                   <ShaderGrid shaders={evolved} {...gridProps} />
-                  <hr class="section-divider" />
                 </Show>
-
-                <h2 class="section-header">Samples</h2>
-                <ShaderGrid shaders={examples} {...gridProps} />
+                <Show when={tab === 'samples'}>
+                  <ShaderGrid shaders={examples} {...gridProps} />
+                </Show>
               </>
             );
           })()}

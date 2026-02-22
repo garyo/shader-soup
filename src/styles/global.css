@@ -171,6 +171,39 @@ body {
   margin: 1rem 0;
 }
 
+/* Page-level shader tabs */
+.shader-tabs {
+  display: flex;
+  gap: 0.5rem;
+  margin: 1.5rem 0 0.5rem;
+  border-bottom: 2px solid var(--border-color);
+}
+
+.shader-tab {
+  padding: 0.6rem 1.25rem;
+  background: transparent;
+  border: none;
+  border-bottom: 3px solid transparent;
+  color: var(--text-muted);
+  font-size: 1rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: color 0.2s, border-color 0.2s;
+  position: relative;
+  bottom: -2px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.shader-tab:hover {
+  color: var(--text-color);
+}
+
+.shader-tab.active {
+  color: var(--primary-color);
+  border-bottom-color: var(--primary-color);
+}
+
 .shader-grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(400px, 1fr));
