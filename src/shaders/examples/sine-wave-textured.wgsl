@@ -1,5 +1,6 @@
 // Polygon Shapes - showcases 2D signed distance functions
 // Renders layered polygon shapes with smooth blending and colorful fills
+// Shapes gently orbit and rotate over time
 
 struct Dimensions {
   width: u32,
@@ -23,6 +24,13 @@ struct Params {
 @group(0) @binding(1) var<uniform> dimensions: Dimensions;
 @group(0) @binding(2) var<uniform> params: Params;
 
+// 2D rotation
+fn rot2(a: f32) -> mat2x2<f32> {
+  let c = cos(a);
+  let s = sin(a);
+  return mat2x2<f32>(c, s, -s, c);
+}
+
 @compute @workgroup_size(8, 8)
 fn main(@builtin(global_invocation_id) id: vec3<u32>) {
   if (id.x >= dimensions.width || id.y >= dimensions.height) {
@@ -37,20 +45,27 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
     dimensions.zoom
   );
 
+  let t = dimensions.time * 0.3;
   let r = params.shapeSize;
   let k = params.blend;
 
-  // Big hexagon at center
-  let dHex = sdHexagon(coord, r);
+  // Central shapes: rotate slowly in place
+  let centerCoord = rot2(t * 0.5) * coord;
+  let dHex = sdHexagon(centerCoord, r);
+  let dStar = sdStar(centerCoord, r * 0.55, i32(params.starPoints), 2.5);
 
-  // Star nestled inside the hexagon
-  let dStar = sdStar(coord, r * 0.55, i32(params.starPoints), 2.5);
+  // Outer shapes orbit slowly around the center
+  let orbitR = 0.85;
+  let triPos = vec2f(cos(t), sin(t)) * orbitR;
+  let pentPos = vec2f(cos(t + 2.094), sin(t + 2.094)) * orbitR;
+  let octPos = vec2f(cos(t + 4.189), sin(t + 4.189)) * orbitR;
+  let hexSmallPos = vec2f(cos(t + 5.236), sin(t + 5.236)) * orbitR;
 
-  // Small shapes scattered near the edges
-  let dTri = sdEquilateralTriangle(coord - vec2f(0.8, 0.45), r * 0.25);
-  let dPent = sdPentagon(coord - vec2f(-0.85, -0.35), r * 0.22);
-  let dOct = sdOctagon(coord - vec2f(0.75, -0.5), r * 0.2);
-  let dHexSmall = sdHexagram(coord - vec2f(-0.8, 0.5), r * 0.18);
+  // Each outer shape rotates around its own center too
+  let dTri = sdEquilateralTriangle(rot2(-t * 1.2) * (coord - triPos), r * 0.25);
+  let dPent = sdPentagon(rot2(t * 0.8) * (coord - pentPos), r * 0.22);
+  let dOct = sdOctagon(rot2(-t * 0.6) * (coord - octPos), r * 0.2);
+  let dHexSmall = sdHexagram(rot2(t * 1.0) * (coord - hexSmallPos), r * 0.18);
 
   // Central composition: star inside hexagon (smooth intersection via smooth_max)
   let dCenter = smooth_max(dHex, dStar, k);
@@ -71,7 +86,7 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
   let w4 = 1.0 / (abs(dOct)     + 0.02);
   let w5 = 1.0 / (abs(dHexSmall) + 0.02);
   let totalW = w0 + w1 + w2 + w3 + w4 + w5;
-  let hue = (w0 * 0.5 + w1 * 1.0 + w2 * 2.0 + w3 * 3.2 + w4 * 4.5 + w5 * 5.5) / totalW + params.colorShift + dimensions.time * 0.4;
+  let hue = (w0 * 0.5 + w1 * 1.0 + w2 * 2.0 + w3 * 3.2 + w4 * 4.5 + w5 * 5.5) / totalW + params.colorShift + t * 0.5;
 
   // Inside: saturated color. Outside: dark with glow. Edges highlighted.
   let inside = smoothstep(0.01, -0.01, d);
@@ -84,9 +99,9 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
   let hexEdge = 1.0 - smoothstep(-ew, ew, abs(dHex));
 
   // In the ring between star and hex (star > 0, hex < 0): red-to-purple ramp
-  let inRing = step(0.0, dStar) * step(dHex, 0.0); // 1.0 when inside hex but outside star
-  let ringT = saturate_f32(dStar / (dStar - dHex + 0.001)); // 0 at star edge, 1 at hex edge
-  let ringCol = mix(vec3f(0.9, 0.1, 0.1), vec3f(0.6, 0.1, 0.9), ringT); // red -> purple
+  let inRing = step(0.0, dStar) * step(dHex, 0.0);
+  let ringT = saturate_f32(dStar / (dStar - dHex + 0.001));
+  let ringCol = mix(vec3f(0.9, 0.1, 0.1), vec3f(0.6, 0.1, 0.9), ringT);
 
   let baseCol = hsv_to_rgb(hue, 0.75 + 0.25 * inside, 0.1 + 0.8 * inside + 0.25 * glow);
   let col = mix(baseCol, ringCol, inRing);

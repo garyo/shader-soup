@@ -17,7 +17,6 @@ struct Params {
   octaves: f32,     // min=1.0, max=8.0, default=4.0, step=1.0
   lacunarity: f32,  // min=1.5, max=3.0, default=2.0, step=0.1
   gain: f32,        // min=0.1, max=0.9, default=0.5, step=0.05
-  warpAmount: f32,  // min=0.0, max=2.0, default=0.3, step=0.1
   brightness: f32,  // min=0.0, max=2.0, default=1.0, step=0.1
   contrast: f32,    // min=0.5, max=2.0, default=1.2, step=0.1
 }
@@ -43,11 +42,6 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
 
   // Scale coordinates
   var p = coord * params.scale + vec2f(dimensions.time * 0.2, dimensions.time * 0.1);
-
-  // Apply domain warping for more organic shapes
-  if (params.warpAmount > 0.0) {
-    p = domainWarp(p, params.warpAmount);
-  }
 
   // Generate fractal noise
   let noise = fbmPerlinCustom(
