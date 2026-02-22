@@ -31,7 +31,8 @@ export class GPUPostProcessor {
 
   // Cached bind group (recreated only when input/output textures change)
   private cachedBindGroup: GPUBindGroup | null = null;
-  private cachedBindGroupKey: string = '';
+  private cachedInputTexture: GPUTexture | null = null;
+  private cachedOutputPoolKey: string = '';
 
   // Reusable typed arrays for writing to buffers
   private dimensionsData = new Uint32Array(2);
@@ -177,8 +178,8 @@ export class GPUPostProcessor {
     device.queue.writeBuffer(this.paramsBuffer!, 0, this.paramsData);
 
     // Recreate bind group only when input/output textures change
-    const bindGroupKey = `${inputTexture.label}:${poolKey}`;
-    if (this.cachedBindGroupKey !== bindGroupKey) {
+    // Compare actual texture object identity (not label) since different textures can share labels
+    if (this.cachedInputTexture !== inputTexture || this.cachedOutputPoolKey !== poolKey) {
       this.cachedBindGroup = device.createBindGroup({
         label: 'gpu-post-processor-bind-group',
         layout: this.pipeline!.getBindGroupLayout(0),
@@ -189,7 +190,8 @@ export class GPUPostProcessor {
           { binding: 3, resource: { buffer: this.paramsBuffer! } },
         ],
       });
-      this.cachedBindGroupKey = bindGroupKey;
+      this.cachedInputTexture = inputTexture;
+      this.cachedOutputPoolKey = poolKey;
     }
 
     // Create filterable display texture with mipmaps (for antialiased rendering)
@@ -355,9 +357,10 @@ export class GPUPostProcessor {
       }
     }
     // Invalidate cached bind group if it referenced this shader's textures
-    if (this.cachedBindGroupKey.includes(shaderId)) {
+    if (this.cachedOutputPoolKey.includes(shaderId)) {
       this.cachedBindGroup = null;
-      this.cachedBindGroupKey = '';
+      this.cachedInputTexture = null;
+      this.cachedOutputPoolKey = '';
     }
   }
 
@@ -376,6 +379,7 @@ export class GPUPostProcessor {
     this.displayTexturePool.clear();
 
     this.cachedBindGroup = null;
-    this.cachedBindGroupKey = '';
+    this.cachedInputTexture = null;
+    this.cachedOutputPoolKey = '';
   }
 }
