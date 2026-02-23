@@ -2,7 +2,7 @@
  * Evolution Status - Display real-time evolution progress
  */
 
-import { type Component, Show } from 'solid-js';
+import { type Component, Show, createSignal, onCleanup } from 'solid-js';
 import type { EvolutionProgress } from '@/stores';
 
 interface EvolutionStatusProps {
@@ -11,6 +11,12 @@ interface EvolutionStatusProps {
 }
 
 export const EvolutionStatus: Component<EvolutionStatusProps> = (props) => {
+  const [tick, setTick] = createSignal(0);
+  const interval = setInterval(() => setTick(t => t + 1), 1000);
+  onCleanup(() => clearInterval(interval));
+
+  const isActive = () => !['complete', 'failed', 'cancelled'].includes(props.progress.status);
+
   const progressPercent = () => {
     // Calculate progress considering both children and experiments per child
     // Total work = totalChildren * (maxExperiments + debugging + compilation)
@@ -50,6 +56,7 @@ export const EvolutionStatus: Component<EvolutionStatusProps> = (props) => {
   };
 
   const elapsedTime = () => {
+    tick(); // subscribe to per-second updates
     const elapsed = Date.now() - props.progress.startTime.getTime();
     return Math.floor(elapsed / 1000);
   };
@@ -68,6 +75,7 @@ export const EvolutionStatus: Component<EvolutionStatusProps> = (props) => {
           <div class="progress-fill" style={{ width: `${progressPercent()}%` }} />
         </div>
         <div class="progress-text">
+          <Show when={isActive()}><span class="spinner" /></Show>
           Child {props.progress.currentChild}/{props.progress.totalChildren} • {statusText()}
         </div>
       </div>
