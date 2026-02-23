@@ -1,11 +1,12 @@
 /**
- * Video Exporter - Renders shader animations to MP4 using WebCodecs + mp4-muxer
+ * Video Exporter - Renders shader animations to MP4 using WebCodecs + Mediabunny
  *
  * Uses GPU readback (texture → buffer → map) to capture frames, avoiding
  * unreliable VideoFrame-from-OffscreenCanvas path with WebGPU contexts.
  */
 
-import { Muxer, ArrayBufferTarget } from 'mp4-muxer';
+import { Output, Mp4OutputFormat, BufferTarget,
+         EncodedVideoPacketSource, EncodedPacket } from 'mediabunny';
 import type { WebGPUContext } from '../engine/WebGPUContext';
 import type { ShaderCompiler } from '../engine/ShaderCompiler';
 import type { BufferManager } from '../engine/BufferManager';
@@ -210,25 +211,23 @@ export class VideoExporter {
       });
     }
 
-    // --- Set up mp4-muxer + VideoEncoder ---
+    // --- Set up Mediabunny muxer + VideoEncoder ---
 
-    const target = new ArrayBufferTarget();
-    const muxer = new Muxer({
-      target,
-      video: {
-        codec: 'avc',
-        width,
-        height,
-      },
-      fastStart: 'in-memory',
+    const bufferTarget = new BufferTarget();
+    const output = new Output({
+      format: new Mp4OutputFormat({ fastStart: 'in-memory' }),
+      target: bufferTarget,
     });
+
+    const videoSource = new EncodedVideoPacketSource('avc');
+    output.addVideoTrack(videoSource, { frameRate: config.fps });
 
     // Track encoder errors — the error callback fires asynchronously
     let encoderError: string | null = null;
 
     const videoEncoder = new VideoEncoder({
       output: (chunk, meta) => {
-        muxer.addVideoChunk(chunk, meta);
+        videoSource.add(EncodedPacket.fromEncodedChunk(chunk), meta);
       },
       error: (err) => {
         console.error('VideoEncoder error:', err);
@@ -264,6 +263,8 @@ export class VideoExporter {
     const frameData = new Uint32Array(1);
 
     const startTime = performance.now();
+
+    await output.start();
 
     try {
       onProgress?.({
@@ -466,9 +467,10 @@ export class VideoExporter {
 
       await videoEncoder.flush();
       videoEncoder.close();
-      muxer.finalize();
+      await output.finalize();
 
-      const buffer = target.buffer;
+      const buffer = bufferTarget.buffer;
+      if (!buffer) throw new Error('Muxer produced no output');
       return new Blob([buffer], { type: 'video/mp4' });
     } catch (err) {
       try { videoEncoder.close(); } catch { /* ignore */ }
