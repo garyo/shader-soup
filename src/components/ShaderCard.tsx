@@ -35,6 +35,7 @@ interface ShaderCardProps {
   onShaderCompile: (source: string) => Promise<{ success: boolean; errors?: Array<{ message: string; line?: number; column?: number }> }>;
   onAnimationStart: (shaderId: string, overrideDimensions?: Dimensions, timeOffset?: number) => void;
   onAnimationStop: (shaderId: string) => number;
+  onRecordVideo?: () => void;
 }
 
 export const ShaderCard: Component<ShaderCardProps> = (props) => {
@@ -265,6 +266,19 @@ export const ShaderCard: Component<ShaderCardProps> = (props) => {
               <path d="M4 0a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h8a2 2 0 0 0 2-2V2a2 2 0 0 0-2-2H4zm0 1h8a1 1 0 0 1 1 1v12a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V2a1 1 0 0 1 1-1z"/>
             </svg>
           </button>
+          <Show when={props.onRecordVideo}>
+            <button
+              class="record-video-button"
+              onClick={props.onRecordVideo}
+              title="Record animation as MP4 video"
+            >
+              <svg width="16" height="16" viewBox="0 0 16 16" fill="#e74c3c">
+                <path d="M0 4a2 2 0 0 1 2-2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H2a2 2 0 0 1-2-2V4zm2-1a1 1 0 0 0-1 1v8a1 1 0 0 0 1 1h8a1 1 0 0 0 1-1V4a1 1 0 0 0-1-1H2z"/>
+                <path d="M13 5.5l2.553-1.702A.5.5 0 0 1 16 4.25v7.5a.5.5 0 0 1-.447.452L13 10.5V5.5z"/>
+                <circle cx="6" cy="8" r="2.5"/>
+              </svg>
+            </button>
+          </Show>
           <button
             class="delete-shader-button"
             onClick={props.onDeleteShader}

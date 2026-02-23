@@ -7,6 +7,7 @@ import { ShaderGrid } from './ShaderGrid';
 import { Toolbar } from './Toolbar';
 import { MashupToolbar } from './MashupToolbar';
 import { EvolveOptionsModal } from './EvolveOptionsModal';
+import { VideoExportDialog, type VideoExportSettings } from './VideoExportDialog';
 import { LogOverlay, type LogEntry } from './LogOverlay';
 import { ProfilingOverlay } from './ProfilingOverlay';
 import WebGPUCheck from './WebGPUCheck';
@@ -32,6 +33,7 @@ import type { ShaderDefinition } from '@/types/core';
 import { getErrorMessage, calculateSupersampledDimensions } from '@/utils/helpers';
 import { ShaderExporter } from '@/utils/ShaderExporter';
 import { ShaderImporter } from '@/utils/ShaderImporter';
+import { VideoExporter, type VideoExportProgress } from '@/core/output/VideoExporter';
 
 // Import example shader sources
 import sineWaveSource from '../shaders/examples/sine-wave.wgsl?raw';
@@ -88,6 +90,12 @@ export const App: Component = () => {
   const [pendingEvolveShaderId, setPendingEvolveShaderId] = createSignal<string | null>(null);
   const [activeShaderTab, setActiveShaderTab] = createSignal<'evolved' | 'samples'>('samples');
 
+  // Video export state
+  const [videoExportOpen, setVideoExportOpen] = createSignal(false);
+  const [videoExportShaderId, setVideoExportShaderId] = createSignal<string | null>(null);
+  const [videoExportProgress, setVideoExportProgress] = createSignal<VideoExportProgress | null>(null);
+  const [videoExporting, setVideoExporting] = createSignal(false);
+
   const maxLogEntries = 32;
   // Add log entry to the overlay (at the end of the list)
   const addLog = (message: string, type: 'info' | 'error' | 'success' = 'info') => {
@@ -113,6 +121,7 @@ export const App: Component = () => {
   let gpuPostProcessor: GPUPostProcessor;
   let shaderEvolver: ShaderEvolver;
   let animationController: AnimationController;
+  let videoExporter: VideoExporter;
 
   // Initialize WebGPU and load example shaders
   onMount(async () => {
@@ -129,6 +138,12 @@ export const App: Component = () => {
       resultRenderer = new ResultRenderer(bufferManager, context);
       postProcessor = new PostProcessor(context, bufferManager);
       gpuPostProcessor = new GPUPostProcessor(context, compiler, bufferManager);
+
+      // Video exporter for MP4 recording
+      videoExporter = new VideoExporter(
+        context, compiler, bufferManager, parameterManager,
+        pipelineBuilder, executor, gpuPostProcessor,
+      );
 
       // Animation controller for mouse-over animation
       animationController = new AnimationController(
@@ -680,6 +695,84 @@ export const App: Component = () => {
     animationController.stopAnimation(shaderId);
     fullscreenAnimations.delete(shaderId);
     return elapsed;
+  };
+
+  const handleRecordVideo = (shaderId: string) => {
+    if (!VideoExporter.isSupported()) {
+      alert('Video recording is not supported in this browser. Please use Chrome or Edge.');
+      return;
+    }
+    setVideoExportShaderId(shaderId);
+    setVideoExportProgress(null);
+    setVideoExporting(false);
+    setVideoExportOpen(true);
+  };
+
+  const handleVideoExportConfirm = async (settings: VideoExportSettings) => {
+    const shaderId = videoExportShaderId();
+    if (!shaderId) return;
+
+    const shader = shaderStore.getShader(shaderId);
+    if (!shader) return;
+
+    const globalParams = shaderStore.getGlobalParameters(shaderId);
+    const paramValues = shaderStore.getParameterValues(shaderId);
+    const iterations = shaderStore.getIterationValue(shaderId) ?? shader.iterations ?? 1;
+
+    setVideoExporting(true);
+    setVideoExportProgress(null);
+    addLog(`Recording video of "${shader.name}" (${settings.width}x${settings.height}, ${settings.duration}s, ${settings.fps}fps, ${settings.bitrateMbps}Mbps)...`);
+
+    try {
+      const blob = await videoExporter.export(
+        {
+          shader,
+          shaderId,
+          width: settings.width,
+          height: settings.height,
+          duration: settings.duration,
+          fps: settings.fps,
+          gamma: globalParams.gamma,
+          contrast: globalParams.contrast,
+          zoom: globalParams.zoom,
+          panX: globalParams.panX,
+          panY: globalParams.panY,
+          bitrateMbps: settings.bitrateMbps,
+          parameterValues: paramValues,
+          iterations,
+        },
+        (progress) => setVideoExportProgress({ ...progress }),
+      );
+
+      // Trigger download
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `${shader.name.replace(/[^a-z0-9]/gi, '_').toLowerCase()}_${settings.width}x${settings.height}.mp4`;
+      a.click();
+      URL.revokeObjectURL(url);
+
+      addLog(`Video recorded successfully (${(blob.size / 1_000_000).toFixed(1)} MB)`, 'success');
+      setVideoExportOpen(false);
+    } catch (err) {
+      if ((err as Error).message === 'Export cancelled') {
+        addLog('Video export cancelled');
+      } else {
+        addLog(`Video export failed: ${getErrorMessage(err)}`, 'error');
+        console.error('Video export error:', err);
+      }
+    } finally {
+      setVideoExporting(false);
+      setVideoExportProgress(null);
+    }
+  };
+
+  const handleVideoExportCancel = () => {
+    if (videoExporting()) {
+      videoExporter.cancel();
+    } else {
+      setVideoExportOpen(false);
+    }
   };
 
   const handleEvolve = (shaderId: string) => {
@@ -1422,6 +1515,7 @@ export const App: Component = () => {
               onShaderCompile: handleShaderCompile,
               onAnimationStart: handleAnimationStart,
               onAnimationStop: handleAnimationStop,
+              onRecordVideo: VideoExporter.isSupported() ? handleRecordVideo : undefined,
             } as const;
 
             const allShaders = shaderStore.getActiveShaders();
@@ -1473,6 +1567,20 @@ export const App: Component = () => {
         model={model()}
         onConfirm={handleEvolveOptionsConfirm}
         onCancel={handleEvolveOptionsCancel}
+      />
+
+      <VideoExportDialog
+        open={videoExportOpen()}
+        shaderName={(() => {
+          const id = videoExportShaderId();
+          return id ? (shaderStore.getShader(id)?.name ?? '') : '';
+        })()}
+        shaderWidth={inputStore.outputDimensions.width}
+        shaderHeight={inputStore.outputDimensions.height}
+        progress={videoExportProgress()}
+        exporting={videoExporting()}
+        onConfirm={handleVideoExportConfirm}
+        onCancel={handleVideoExportCancel}
       />
 
       <MashupToolbar

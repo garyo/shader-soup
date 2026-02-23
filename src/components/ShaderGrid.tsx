@@ -26,6 +26,7 @@ interface ShaderGridProps {
   onShaderCompile: (source: string) => Promise<{ success: boolean; errors?: Array<{ message: string; line?: number; column?: number }> }>;
   onAnimationStart: (shaderId: string, overrideDimensions?: { width: number; height: number }, timeOffset?: number) => void;
   onAnimationStop: (shaderId: string) => number;
+  onRecordVideo?: (shaderId: string) => void;
 }
 
 export const ShaderGrid: Component<ShaderGridProps> = (props) => {
@@ -57,6 +58,7 @@ export const ShaderGrid: Component<ShaderGridProps> = (props) => {
             onShaderCompile={props.onShaderCompile}
             onAnimationStart={props.onAnimationStart}
             onAnimationStop={props.onAnimationStop}
+            onRecordVideo={props.onRecordVideo ? () => props.onRecordVideo!(shader.id) : undefined}
           />
         )}
       </For>
