@@ -24,6 +24,7 @@ export class GPUPostProcessor {
   // Mipmap generation pipeline
   private mipmapPipeline: GPURenderPipeline | null = null;
   private mipmapSampler: GPUSampler | null = null;
+  private trilinearSampler: GPUSampler | null = null;
 
   // Cached uniform buffers (reused every frame)
   private dimensionsBuffer: GPUBuffer | null = null;
@@ -164,11 +165,20 @@ export class GPUPostProcessor {
     const poolKey = `${shaderId}-${computeDimensions.width}x${computeDimensions.height}`;
     let outputTexture = this.texturePool.get(poolKey);
 
-    if (!outputTexture) {
+    // Storage texture needs RENDER_ATTACHMENT for mipmap generation (used for trilinear downsampling)
+    const needsMipmaps = computeDimensions.width !== displayDimensions.width ||
+        computeDimensions.height !== displayDimensions.height;
+    const storageMipCount = needsMipmaps
+      ? Math.floor(Math.log2(Math.max(computeDimensions.width, computeDimensions.height))) + 1
+      : 1;
+
+    if (!outputTexture || (needsMipmaps && outputTexture.mipLevelCount === 1)) {
+      outputTexture?.destroy();
       outputTexture = device.createTexture({
         size: { width: computeDimensions.width, height: computeDimensions.height },
         format: displayFormat,
-        usage: GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_SRC,
+        usage: GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_SRC | GPUTextureUsage.RENDER_ATTACHMENT,
+        mipLevelCount: storageMipCount,
         label: `post-processed-output-${shaderId}`,
       });
       this.texturePool.set(poolKey, outputTexture);
@@ -190,7 +200,7 @@ export class GPUPostProcessor {
         layout: this.pipeline!.getBindGroupLayout(0),
         entries: [
           { binding: 0, resource: inputTexture.createView() },
-          { binding: 1, resource: outputTexture.createView() },
+          { binding: 1, resource: outputTexture.createView({ baseMipLevel: 0, mipLevelCount: 1 }) },
           { binding: 2, resource: { buffer: this.dimensionsBuffer! } },
           { binding: 3, resource: { buffer: this.paramsBuffer! } },
         ],
@@ -240,23 +250,27 @@ export class GPUPostProcessor {
     pass.dispatchWorkgroups(workgroupsX, workgroupsY);
     pass.end();
 
+    device.queue.submit([encoder.finish()]);
+
     // 2. Downsample storage texture → display texture mip 0
     if (computeDimensions.width === displayDimensions.width &&
         computeDimensions.height === displayDimensions.height) {
       // Same size: simple copy
-      encoder.copyTextureToTexture(
+      const copyEncoder = device.createCommandEncoder({ label: 'copy-to-display' });
+      copyEncoder.copyTextureToTexture(
         { texture: outputTexture },
         { texture: displayTexture, mipLevel: 0 },
         { width: displayDimensions.width, height: displayDimensions.height }
       );
-      device.queue.submit([encoder.finish()]);
+      device.queue.submit([copyEncoder.finish()]);
     } else {
-      // Different sizes: submit compute first, then downsample via render pass with linear filtering
-      device.queue.submit([encoder.finish()]);
-      this.downsampleToDisplay(device, outputTexture, displayTexture);
+      // Generate mipmaps on storage texture, then trilinear blit to display texture.
+      // This lets the GPU's mipmap hardware properly filter the 3× downsample.
+      this.generateMipmaps(device, outputTexture);
+      this.blitWithTrilinear(device, outputTexture, displayTexture);
     }
 
-    // 3. Generate mipmaps from mip 0 (single submit internally)
+    // 3. Generate mipmaps on display texture for antialiased canvas rendering
     this.generateMipmaps(device, displayTexture);
 
     return {
@@ -266,31 +280,30 @@ export class GPUPostProcessor {
   }
 
   /**
-   * Downsample a source texture into the mip 0 of a (smaller) destination texture
-   * using a render pass with linear filtering.
+   * Blit from a mipmapped source texture to dest texture mip 0 using trilinear filtering.
+   * The GPU's mipmap hardware selects and blends the appropriate mip levels for the
+   * downsample ratio, giving high-quality results in a single pass.
    */
-  private downsampleToDisplay(
+  private blitWithTrilinear(
     device: GPUDevice,
     source: GPUTexture,
     dest: GPUTexture
   ): void {
-    if (!this.mipmapPipeline) {
-      this.initMipmapPipeline();
-      return;
-    }
+    if (!this.mipmapPipeline) return;
 
+    // Use full mip chain view so the sampler can access all levels
     const bindGroup = device.createBindGroup({
-      label: 'downsample-to-display',
+      label: 'trilinear-downsample',
       layout: this.mipmapPipeline.getBindGroupLayout(0),
       entries: [
-        { binding: 0, resource: source.createView({ baseMipLevel: 0, mipLevelCount: 1 }) },
-        { binding: 1, resource: this.mipmapSampler! },
+        { binding: 0, resource: source.createView() },
+        { binding: 1, resource: this.trilinearSampler! },
       ],
     });
 
-    const encoder = device.createCommandEncoder({ label: 'downsample-to-display' });
+    const encoder = device.createCommandEncoder({ label: 'trilinear-downsample' });
     const renderPass = encoder.beginRenderPass({
-      label: 'downsample-to-display-pass',
+      label: 'trilinear-downsample-pass',
       colorAttachments: [{
         view: dest.createView({ baseMipLevel: 0, mipLevelCount: 1 }),
         loadOp: 'clear',
@@ -324,10 +337,17 @@ export class GPUPostProcessor {
       code: shaderCode,
     });
 
-    // Create sampler for downsampling
+    // Create sampler for mipmap generation (bilinear, single mip level at a time)
     this.mipmapSampler = device.createSampler({
       minFilter: 'linear',
       magFilter: 'linear',
+    });
+
+    // Create trilinear sampler for high-quality downsampling across mip levels
+    this.trilinearSampler = device.createSampler({
+      minFilter: 'linear',
+      magFilter: 'linear',
+      mipmapFilter: 'linear',
     });
 
     // Create render pipeline

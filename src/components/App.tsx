@@ -432,6 +432,14 @@ export const App: Component = () => {
 
       const dimensions = inputStore.outputDimensions;
 
+      // Display texture sized for sharp rendering on HiDPI canvases, capped at supersample res
+      const dpr = window.devicePixelRatio || 1;
+      const displaySize = Math.max(Math.ceil(dimensions.width * dpr), 1024);
+      const displayDimensions = {
+        width: Math.min(displaySize, dimensions.width * 3),
+        height: Math.min(displaySize, dimensions.height * 3),
+      };
+
       // Supersample at 3x for antialiasing
       const supersampleFactor = 3;
       const superDimensions = calculateSupersampledDimensions(dimensions, supersampleFactor);
@@ -484,7 +492,7 @@ export const App: Component = () => {
           shaderId,
           outputTexture,
           superDimensions,
-          dimensions,
+          displayDimensions,
           globalParams.gamma,
           globalParams.contrast
         );
@@ -623,6 +631,14 @@ export const App: Component = () => {
       const superDimensions = calculateSupersampledDimensions(dimensions, supersampleFactor);
       const globalParams = shaderStore.getGlobalParameters(shaderId);
 
+      // Display texture sized for sharp rendering on HiDPI canvases, capped at supersample res
+      const dpr = window.devicePixelRatio || 1;
+      const animDisplaySize = Math.max(Math.ceil(dimensions.width * dpr), 1024);
+      const animDisplayDimensions = {
+        width: Math.min(animDisplaySize, superDimensions.width),
+        height: Math.min(animDisplaySize, superDimensions.height),
+      };
+
       // Prepare shader (compile + create resources) — cached by pipeline builder
       const prep = await prepareShader(
         compiler,
@@ -649,7 +665,7 @@ export const App: Component = () => {
         shaderId,
         prep,
         superDimensions,
-        dimensions,
+        animDisplayDimensions,
         { gamma: globalParams.gamma, contrast: globalParams.contrast },
         timeOffset ?? 0,
         shader.name,
